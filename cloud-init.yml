@@ -1,0 +1,109 @@
+#cloud-config
+# ==========================================================
+# OpenClaw VM Provisioning (cloud-init)
+# ==========================================================
+# This template is rendered by Terraform's templatefile() function.
+# It installs Docker, Azure CLI, and writes all configuration files
+# needed to run OpenClaw + Nginx in Docker containers.
+#
+# Template variables (set by Terraform):
+#   ${admin_username}       - SSH/admin username
+#   ${keyvault_name}        - Azure Key Vault name
+#   ${fqdn}                 - Azure FQDN (DNS label)
+#   ${file_docker_compose}  - docker-compose.yml content
+#   ${file_openclaw_json}   - openclaw.json content
+#   ${file_nginx_conf}      - nginx.conf content (already rendered)
+#   ${file_start_sh}        - start.sh content (already rendered)
+#   ${file_stop_sh}         - stop.sh content
+#   ${file_clone_repo_sh}   - clone-repo.sh content (already rendered)
+# ==========================================================
+
+# Update package index and upgrade installed packages
+package_update: true
+package_upgrade: true
+
+# Install required system packages
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - apache2-utils
+
+# Write all configuration files to the VM filesystem
+# Each file is injected from templates/ via Terraform templatefile()/file()
+write_files:
+  # Docker Compose configuration (Nginx + OpenClaw containers)
+  - path: /home/${admin_username}/openclaw/docker-compose.yml
+    owner: ${admin_username}:${admin_username}
+    permissions: "0644"
+    content: |
+      ${indent(6, file_docker_compose)}
+
+  # OpenClaw agent configuration (model, tools, system prompt)
+  - path: /home/${admin_username}/openclaw/config/openclaw.json
+    owner: ${admin_username}:${admin_username}
+    permissions: "0644"
+    content: |
+      ${indent(6, file_openclaw_json)}
+
+  # Nginx reverse proxy configuration (SSL + Basic Auth)
+  - path: /home/${admin_username}/openclaw/nginx/default.conf
+    owner: ${admin_username}:${admin_username}
+    permissions: "0644"
+    content: |
+      ${indent(6, file_nginx_conf)}
+
+  # Startup script (loads Key Vault secrets, sets up htpasswd, starts Docker)
+  - path: /home/${admin_username}/openclaw/start.sh
+    owner: ${admin_username}:${admin_username}
+    permissions: "0755"
+    content: |
+      ${indent(6, file_start_sh)}
+
+  # Stop script (stops Docker, cleans up local secrets)
+  - path: /home/${admin_username}/openclaw/stop.sh
+    owner: ${admin_username}:${admin_username}
+    permissions: "0755"
+    content: |
+      ${indent(6, file_stop_sh)}
+
+  # Clone helper script (clones GitHub repos with optional PAT auth)
+  - path: /home/${admin_username}/openclaw/clone-repo.sh
+    owner: ${admin_username}:${admin_username}
+    permissions: "0755"
+    content: |
+      ${indent(6, file_clone_repo_sh)}
+
+# Commands to run after packages are installed and files are written
+runcmd:
+  # Install Docker Engine via convenience script
+  - curl -fsSL https://get.docker.com | sh
+  - usermod -aG docker ${admin_username}
+
+  # Ensure Docker Compose plugin is available
+  - apt-get install -y -qq docker-compose-plugin
+
+  # Install Azure CLI (needed for Key Vault access from VM)
+  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
+  # Create runtime directories (workspace for repos, ssl for certs)
+  - mkdir -p /home/${admin_username}/openclaw/workspace /home/${admin_username}/openclaw/nginx/ssl
+
+  # Generate a self-signed SSL certificate for the Azure FQDN
+  - |
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout /home/${admin_username}/openclaw/nginx/ssl/openclaw.key \
+      -out /home/${admin_username}/openclaw/nginx/ssl/openclaw.crt \
+      -subj "/CN=${fqdn}/O=OpenClaw/C=DE" \
+      -addext "subjectAltName=DNS:${fqdn}"
+
+  # Create empty htpasswd file (will be populated by start.sh at runtime)
+  - touch /home/${admin_username}/openclaw/nginx/.htpasswd
+
+  # Ensure correct ownership for the entire openclaw directory
+  - chown -R ${admin_username}:${admin_username} /home/${admin_username}/openclaw
+
+  # Pre-pull Docker images to speed up first start
+  - docker pull openclaw/openclaw:latest
+  - docker pull nginx:alpine

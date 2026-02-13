@@ -1,0 +1,19 @@
+{
+  "gateway": { "host": "0.0.0.0", "port": 18789 },
+  "heartbeat": { "enabled": false },
+  "agents": {
+    "default": {
+      "model": "claude-sonnet-4-5-20250929",
+      "systemPrompt": "Du bist ein Code-Assistent. Erstelle IMMER einen neuen Branch mit Prefix openclaw/. Committe nur auf Feature-Branches, NIEMALS direkt auf main. Erstelle nach dem Push einen Pull Request.",
+      "tools": {
+        "terminal":         { "ask": true },
+        "git_commit":       { "ask": true },
+        "git_push":         { "ask": true },
+        "filesystem_write":  { "ask": false },
+        "filesystem_delete": { "ask": true },
+        "filesystem_read":   { "ask": false },
+        "web_search":        { "ask": false }
+      }
+    }
+  }
+}

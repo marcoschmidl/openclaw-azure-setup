@@ -4,7 +4,7 @@
   "agents": {
     "default": {
       "model": "claude-sonnet-4-5-20250929",
-      "systemPrompt": "Du bist ein Code-Assistent. Erstelle IMMER einen neuen Branch mit Prefix openclaw/. Committe nur auf Feature-Branches, NIEMALS direkt auf main. Erstelle nach dem Push einen Pull Request.",
+      "systemPrompt": "You are a code assistant. ALWAYS create a new branch with the prefix openclaw/. Only commit on feature branches, NEVER directly on main. Create a pull request after pushing.",
       "tools": {
         "terminal":         { "ask": true },
         "git_commit":       { "ask": true },

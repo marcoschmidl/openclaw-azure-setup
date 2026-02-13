@@ -1,19 +1,19 @@
 # OpenClaw GitHub Agent — Azure VM Deployment
 
-Deployt eine Ubuntu 24.04 VM auf Azure mit Docker, OpenClaw im Container,
-Nginx Reverse Proxy (Basic Auth + SSL), Key Vault fuer Secrets und Auto-Shutdown.
+Deploys an Ubuntu 24.04 VM on Azure with Docker, OpenClaw running in a container,
+Nginx reverse proxy (Basic Auth + SSL), Key Vault for secrets, and auto-shutdown.
 
-## Architektur
+## Architecture
 
 ```
 Browser / SSH                       Azure
 ──────────────                ──────────────────────────
                               ┌─ Resource Group ────────┐
-https://<fqdn>  ──────────►  │  VM (Ubuntu 24.04)      │
+https://<fqdn>  ──────────►   │  VM (Ubuntu 24.04)      │
   (Basic Auth)                │  ├── Docker             │
                               │  │   ├── Nginx (SSL)    │
-ssh user@<fqdn> ──────────►  │  │   │   └► :443/:80    │
-  (Key oder Passwort)         │  │   └── OpenClaw       │
+ssh user@<fqdn> ──────────►   │  │   │   └► :443/:80    │
+  (Key or Password)           │  │   └── OpenClaw       │
                               │  │       ├── Config     │
                               │  │       └── Workspace  │
                               │  └── Azure CLI          │
@@ -28,8 +28,8 @@ ssh user@<fqdn> ──────────►  │  │   │   └► :443/
                               │  <label>.westeurope.    │
                               │    cloudapp.azure.com   │
                               │                         │
-                              │  NSG: SSH+HTTPS nur von │
-                              │       deiner IP         │
+                              │  NSG: SSH+HTTPS only    │
+                              │       from your IP      │
                               │                         │
                               │  Auto-Shutdown 22:00    │
                               └─────────────────────────┘
@@ -38,167 +38,167 @@ ssh user@<fqdn> ──────────►  │  │   │   └► :443/
 ## Quickstart
 
 ```bash
-# 1. Secrets konfigurieren (optional)
+# 1. Configure secrets (optional)
 cp .env.example .env
-#    GITHUB_TOKEN und ANTHROPIC_API_KEY eintragen
+#    Fill in GITHUB_TOKEN and ANTHROPIC_API_KEY
 
-# 2. Deployen
+# 2. Deploy
 make deploy
 
-# 3. OpenClaw auf der VM starten
+# 3. Start OpenClaw on the VM
 make openclaw-start
 
-# 4. Dashboard oeffnen
-#    URL und Passwort aus make output bzw. make show-password
+# 4. Open the dashboard
+#    URL and password from make output / make show-password
 ```
 
 ## Make Targets
 
 ```
-make help               Alle Targets anzeigen
+make help               Show all targets
 
 Deployment:
-  make deploy           Infrastruktur deployen (terraform apply)
-  make plan             Aenderungen anzeigen (Dry-Run)
-  make destroy          Alle Ressourcen loeschen
+  make deploy           Deploy infrastructure (terraform apply)
+  make plan             Show planned changes (dry-run)
+  make destroy          Delete all resources
 
-VM-Verwaltung:
-  make start            VM starten
-  make stop             VM stoppen (deallocate)
-  make restart          VM neustarten
-  make status           VM-Status anzeigen
+VM Management:
+  make start            Start the VM
+  make stop             Stop the VM (deallocate)
+  make restart          Restart the VM
+  make status           Show VM status
 
-Zugriff:
-  make ssh              SSH-Verbindung zur VM
-  make show-password    Admin-Passwort anzeigen
-  make show-password-kv Passwort aus Key Vault abrufen
+Access:
+  make ssh              SSH into the VM
+  make show-password    Show admin password
+  make show-password-kv Retrieve password from Key Vault
 
 OpenClaw:
-  make openclaw-start   OpenClaw + Nginx auf VM starten
-  make openclaw-stop    OpenClaw + Nginx auf VM stoppen
+  make openclaw-start   Start OpenClaw + Nginx on VM
+  make openclaw-stop    Stop OpenClaw + Nginx on VM
 
 Logs & Debugging:
-  make logs             OpenClaw Container-Logs
-  make logs-nginx       Nginx Container-Logs
-  make docker-ps        Container-Status auf VM
-  make cloud-init-status  Cloud-init Status
-  make cloud-init-logs    Cloud-init Logs
+  make logs             OpenClaw container logs
+  make logs-nginx       Nginx container logs
+  make docker-ps        Container status on VM
+  make cloud-init-status  Cloud-init status
+  make cloud-init-logs    Cloud-init logs
 
 Terraform:
-  make output           Alle Terraform Outputs
-  make fmt              Terraform formatieren
-  make validate         Terraform validieren
+  make output           Show all Terraform outputs
+  make fmt              Format Terraform files
+  make validate         Validate Terraform configuration
 ```
 
-## Deployment-Optionen
+## Deployment Options
 
-### Option A: Makefile (empfohlen)
+### Option A: Makefile (recommended)
 
 ```bash
-cp .env.example .env       # Secrets eintragen (optional)
+cp .env.example .env       # Fill in secrets (optional)
 make deploy                # terraform init + apply
 ```
 
-### Option B: deploy.sh (interaktiv)
+### Option B: deploy.sh (interactive)
 
 ```bash
-./deploy.sh                # fragt nach Secrets interaktiv
+./deploy.sh                # Prompts for secrets interactively
 ```
 
-### Option C: Terraform direkt
+### Option C: Terraform directly
 
 ```bash
 terraform init
 terraform apply -var-file="secrets.tfvars"
 ```
 
-> **Hinweis:** `GITHUB_TOKEN` und `ANTHROPIC_API_KEY` sind optional. Werden sie
-> weggelassen, werden die Key Vault Secrets nicht erstellt. Das Admin-Passwort
-> wird automatisch generiert.
+> **Note:** `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` are optional. If omitted,
+> the corresponding Key Vault secrets will not be created. The admin password
+> is auto-generated if not provided.
 
-## .env Datei
+## .env File
 
 ```bash
-# .env (nicht committen!)
+# .env (do not commit!)
 GITHUB_TOKEN=ghp_xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 ```
 
-Wird automatisch vom Makefile geladen und als Terraform-Variablen weitergereicht.
+Automatically loaded by the Makefile and passed as Terraform variables.
 
-## Terraform Variablen
+## Terraform Variables
 
-| Variable | Default | Beschreibung |
+| Variable | Default | Description |
 |---|---|---|
-| `location` | `westeurope` | Azure Region |
-| `vm_size` | `Standard_B2s` | VM Groesse (2 vCPU, 4 GB RAM) |
-| `admin_username` | `clawadmin` | SSH + Dashboard Username |
-| `admin_password` | *(auto-generiert)* | SSH + Dashboard Passwort |
-| `github_pat` | *(leer)* | GitHub PAT (optional) |
-| `anthropic_key` | *(leer)* | Anthropic API Key (optional) |
-| `dns_label` | *(auto-generiert)* | DNS Label fuer Public IP |
-| `allowed_ip` | *(auto-ermittelt)* | IP fuer SSH/HTTPS-Zugriff |
-| `ssh_public_key_path` | `~/.ssh/id_rsa.pub` | Pfad zum SSH Public Key |
-| `auto_shutdown_time` | `2200` | Auto-Shutdown (UTC) |
+| `location` | `westeurope` | Azure region |
+| `vm_size` | `Standard_B2s` | VM size (2 vCPU, 4 GB RAM) |
+| `admin_username` | `clawadmin` | SSH + dashboard username |
+| `admin_password` | *(auto-generated)* | SSH + dashboard password |
+| `github_pat` | *(empty)* | GitHub PAT (optional) |
+| `anthropic_key` | *(empty)* | Anthropic API key (optional) |
+| `dns_label` | *(auto-generated)* | DNS label for the public IP |
+| `allowed_ip` | *(auto-detected)* | IP for SSH/HTTPS access |
+| `ssh_public_key_path` | `~/.ssh/id_rsa.pub` | Path to SSH public key |
+| `auto_shutdown_time` | `2200` | Auto-shutdown time (UTC) |
 
-## Taeglicher Workflow
+## Daily Workflow
 
 ```bash
-make start               # VM starten
-make openclaw-start      # OpenClaw + Nginx starten
-#    https://<fqdn> im Browser oeffnen
-make openclaw-stop       # wenn fertig
-make stop                # VM deallocaten (keine Compute-Kosten)
+make start               # Start the VM
+make openclaw-start      # Start OpenClaw + Nginx
+#    Open https://<fqdn> in your browser
+make openclaw-stop       # When done
+make stop                # Deallocate VM (no compute costs)
 ```
 
-## Kosten
+## Costs
 
-| Zustand | Kosten (ca.) |
+| State | Cost (approx.) |
 |---|---|
-| VM laeuft (Standard_B2s) | ~EUR 0.04/h |
-| VM deallocated | ~EUR 1.50/Mo (nur Disk) |
-| Key Vault | ~EUR 0.03/Mo |
-| **Typisch: 4h/Tag Nutzung** | **~EUR 6.50/Mo** |
+| VM running (Standard_B2s) | ~EUR 0.04/h |
+| VM deallocated | ~EUR 1.50/mo (disk only) |
+| Key Vault | ~EUR 0.03/mo |
+| **Typical: 4h/day usage** | **~EUR 6.50/mo** |
 
-Auto-Shutdown um 22:00 UTC verhindert vergessene laufende VMs.
+Auto-shutdown at 22:00 UTC prevents forgotten running VMs.
 
-## Sicherheit
+## Security
 
-- **NSG**: SSH + HTTPS nur von deiner IP, alles andere blockiert
-- **Basic Auth**: Dashboard per Nginx-Container mit Passwort geschuetzt
-- **SSL**: Self-Signed Zertifikat auf Azure FQDN
-- **Key Vault**: Secrets nie auf Disk, werden bei `start.sh` geladen und bei `stop.sh` geloescht
-- **Managed Identity**: VM authentifiziert sich bei Key Vault ohne Credentials
-- **Container-Isolation**: Nginx + OpenClaw laufen in Docker
-- **Auto-Shutdown**: Failsafe gegen vergessene VMs
-- **Dual Auth**: SSH per Key oder Passwort
+- **NSG**: SSH + HTTPS only from your IP, everything else blocked
+- **Basic Auth**: Dashboard protected via Nginx with password
+- **SSL**: Self-signed certificate on Azure FQDN
+- **Key Vault**: Secrets never stored on disk, loaded by `start.sh` and removed by `stop.sh`
+- **Managed Identity**: VM authenticates to Key Vault without credentials
+- **Container Isolation**: Nginx + OpenClaw run in Docker
+- **Auto-Shutdown**: Failsafe against forgotten VMs
+- **Dual Auth**: SSH via key or password
 
-## Dateien
+## Files
 
-| Datei | Beschreibung |
+| File | Description |
 |---|---|
-| `Makefile` | Build-Targets fuer alle Operationen |
-| `main.tf` | Terraform-Konfiguration (gesamte Infrastruktur) |
-| `cloud-init.yml` | VM-Provisioning Template (referenziert templates/) |
-| `.env.example` | Vorlage fuer Secrets |
-| `deploy.sh` | Interaktiver Wrapper fuer Terraform |
-| `destroy.sh` | Loescht alle Ressourcen + Terraform State |
-| `templates/docker-compose.yml` | Docker Compose: Nginx + OpenClaw Container |
-| `templates/openclaw.json` | OpenClaw Agent-Konfiguration |
-| `templates/nginx.conf` | Nginx Reverse Proxy (SSL + Basic Auth) |
-| `templates/start.sh` | Laedt Key Vault Secrets, setzt htpasswd, startet Docker |
-| `templates/stop.sh` | Stoppt Docker, loescht lokale Secrets |
-| `templates/clone-repo.sh` | Klont GitHub Repos (optional mit PAT-Auth) |
+| `Makefile` | Build targets for all operations |
+| `main.tf` | Terraform configuration (entire infrastructure) |
+| `cloud-init.yml` | VM provisioning template (references templates/) |
+| `.env.example` | Template for secrets |
+| `deploy.sh` | Interactive wrapper for Terraform |
+| `destroy.sh` | Deletes all resources + Terraform state |
+| `templates/docker-compose.yml` | Docker Compose: Nginx + OpenClaw containers |
+| `templates/openclaw.json` | OpenClaw agent configuration |
+| `templates/nginx.conf` | Nginx reverse proxy (SSL + Basic Auth) |
+| `templates/start.sh` | Loads Key Vault secrets, sets htpasswd, starts Docker |
+| `templates/stop.sh` | Stops Docker, removes local secrets |
+| `templates/clone-repo.sh` | Clones GitHub repos (optionally with PAT auth) |
 
-## Konfiguration anpassen
+## Customization
 
-### VM-Groesse aendern
+### Change VM size
 
 ```bash
 make deploy EXTRA_TF_VARS='-var="vm_size=Standard_B2ms"'
 ```
 
-### Anderes LLM-Modell
+### Use a different LLM model
 
 ```bash
 make ssh
@@ -235,31 +235,31 @@ Docker container. It controls the agent's behavior, model, and tool permissions.
 > `"ask": true` means the agent will ask for user confirmation before executing.
 > `"ask": false` means the tool runs automatically without prompting.
 
-### NSG-Regel fuer neue IP
+### Update NSG rule for a new IP
 
 ```bash
-make deploy EXTRA_TF_VARS='-var="allowed_ip=NEUE.IP.ADRESSE"'
+make deploy EXTRA_TF_VARS='-var="allowed_ip=NEW.IP.ADDRESS"'
 ```
 
 ## Troubleshooting
 
 ```bash
-make cloud-init-status   # Cloud-init Status pruefen
-make cloud-init-logs     # Cloud-init Logs anzeigen
-make docker-ps           # Container-Status
-make logs                # OpenClaw Logs
-make logs-nginx          # Nginx Logs
+make cloud-init-status   # Check cloud-init status
+make cloud-init-logs     # Show cloud-init logs
+make docker-ps           # Container status
+make logs                # OpenClaw logs
+make logs-nginx          # Nginx logs
 ```
 
-Auf der VM direkt:
+On the VM directly:
 ```bash
-docker exec openclaw-nginx nginx -t    # Nginx Config testen
-curl -k https://localhost               # Dashboard lokal testen
-az login --identity                     # Managed Identity pruefen
+docker exec openclaw-nginx nginx -t    # Test Nginx config
+curl -k https://localhost               # Test dashboard locally
+az login --identity                     # Test managed identity
 ```
 
-## Aufraeumen
+## Cleanup
 
 ```bash
-make destroy             # Interaktiv: loescht alles + Terraform State
+make destroy             # Interactive: deletes everything + Terraform state
 ```

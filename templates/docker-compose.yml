@@ -54,11 +54,11 @@ services:
     expose:
       - "18789"  # Internal port (not exposed to host, only to Nginx)
     healthcheck:
-      test: ["CMD-SHELL", "(echo > /dev/tcp/localhost/18789) 2>/dev/null"]
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:18789/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -67,6 +67,5 @@ services:
     # Security hardening
     security_opt:
       - no-new-privileges:true  # Prevent privilege escalation
-    read_only: true             # Read-only root filesystem
     tmpfs:
       - /tmp:size=256M          # Writable tmpfs for temporary files

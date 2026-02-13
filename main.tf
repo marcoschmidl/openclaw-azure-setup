@@ -204,7 +204,7 @@ resource "azurerm_subnet" "main" {
   address_prefixes     = ["10.0.0.0/26"]
 }
 
-# Network Security Group — only allows SSH and HTTPS from the deployer's IP
+# Network Security Group — only allows SSH, HTTPS and HTTP from the deployer's IP
 resource "azurerm_network_security_group" "main" {
   name                = "nsg-openclaw"
   location            = azurerm_resource_group.main.location

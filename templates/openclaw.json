@@ -1,18 +1,16 @@
 {
-  "gateway": { "host": "0.0.0.0", "port": 18789 },
-  "heartbeat": { "enabled": false },
+  "gateway": {
+    "mode": "local",
+    "port": 18789,
+    "bind": "lan",
+    "auth": {
+      "mode": "password"
+    }
+  },
   "agents": {
-    "default": {
-      "model": "claude-sonnet-4-5-20250929",
-      "systemPrompt": "You are a code assistant. ALWAYS create a new branch with the prefix openclaw/. Only commit on feature branches, NEVER directly on main. Create a pull request after pushing.",
-      "tools": {
-        "terminal":         { "ask": true },
-        "git_commit":       { "ask": true },
-        "git_push":         { "ask": true },
-        "filesystem_write":  { "ask": false },
-        "filesystem_delete": { "ask": true },
-        "filesystem_read":   { "ask": false },
-        "web_search":        { "ask": false }
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-sonnet-4-5"
       }
     }
   }

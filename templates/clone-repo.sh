@@ -22,6 +22,8 @@ err()  { echo -e "\033[0;31m[clone-repo.sh] ERROR: $1\033[0m" >&2; exit 1; }
 
 REPO_URL="$${1:-}"
 KEYVAULT="${keyvault_name}"
+WORK_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE="$WORK_DIR/workspace"
 
 # -- Validate arguments --
 if [ -z "$REPO_URL" ]; then
@@ -38,6 +40,7 @@ fi
 
 log "Cloning repository: $REPO_URL"
 log "  Key Vault: $KEYVAULT"
+log "  Workspace: $WORKSPACE"
 echo ""
 
 # -- Fetch GitHub token from Key Vault (optional) --
@@ -46,25 +49,29 @@ GITHUB_TOKEN=$(az keyvault secret show --vault-name "$KEYVAULT" --name "github-p
 
 if [ -n "$GITHUB_TOKEN" ]; then
     log "  GitHub PAT found — using authenticated clone"
-    AUTH_URL=$(echo "$REPO_URL" | sed "s|https://github.com|https://x-access-token:$GITHUB_TOKEN@github.com|")
 else
     warn "No GitHub PAT in Key Vault — cloning without authentication (public repos only)"
-    AUTH_URL="$REPO_URL"
 fi
 
-# -- Clone into the OpenClaw workspace container --
-log "Cloning into OpenClaw workspace..."
-docker exec openclaw-github-agent bash -c 'cd /home/openclaw/workspace && git clone -- "$1"' _ "$AUTH_URL"
+# -- Clone into the OpenClaw workspace directory --
+log "Cloning into workspace..."
+mkdir -p "$WORKSPACE"
+cd "$WORKSPACE"
+if [ -n "$GITHUB_TOKEN" ]; then
+    git -c "http.https://github.com/.extraheader=AUTHORIZATION: Bearer $GITHUB_TOKEN" clone -- "$REPO_URL"
+else
+    git clone -- "$REPO_URL"
+fi
 
 # -- Verify clone --
 REPO_NAME=$(basename "$REPO_URL" .git)
 log "Verifying clone..."
-if docker exec openclaw-github-agent test -d "/home/openclaw/workspace/$REPO_NAME"; then
+if [ -d "$WORKSPACE/$REPO_NAME" ]; then
     log "  Repository '$REPO_NAME' cloned successfully"
 else
     warn "  Clone may have failed — directory not found"
 fi
 
 echo ""
-log "Done. Repository available at: /home/openclaw/workspace/$REPO_NAME"
+log "Done. Repository available at: $WORKSPACE/$REPO_NAME"
 echo ""

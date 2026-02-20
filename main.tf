@@ -2,7 +2,8 @@
 # OpenClaw GitHub Agent — Azure VM (Terraform)
 # ==========================================================
 # Provisions a full Azure environment for running the OpenClaw
-# GitHub agent inside Docker on an Ubuntu 24.04 VM.
+# GitHub agent on an Ubuntu 24.04 VM. OpenClaw runs as a native
+# host process (systemd), Nginx runs in Docker for SSL + Basic Auth.
 #
 # Resources created:
 #   - Resource Group
@@ -29,11 +30,11 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      version = "~> 4.60"
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.0"
+      version = "~> 3.8"
     }
     http = {
       source  = "hashicorp/http"
@@ -84,7 +85,7 @@ variable "admin_password" {
   type        = string
   default     = ""
   sensitive   = true
-  description = "Admin password for SSH and dashboard. Leave empty to auto-generate a 24-char random password."
+  description = "Admin password for dashboard Basic Auth. Leave empty to auto-generate a 24-char random password."
 }
 
 variable "auto_shutdown_time" {
@@ -131,9 +132,16 @@ variable "ssh_public_key_path" {
 # Current deployer identity (used for Key Vault RBAC role assignments)
 data "azurerm_client_config" "current" {}
 
-# Auto-detect deployer's public IP for NSG rules
+# Auto-detect deployer's public IP for NSG rules (with fallback)
 data "http" "my_ip" {
   url = "https://api.ipify.org"
+
+  lifecycle {
+    postcondition {
+      condition     = can(regex("^\\d+\\.\\d+\\.\\d+\\.\\d+$", self.response_body))
+      error_message = "Failed to detect public IP from ipify.org. Set var.allowed_ip manually."
+    }
+  }
 }
 
 # ----------------------------------------------------------
@@ -292,6 +300,14 @@ resource "azurerm_key_vault" "main" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
+
+  # Firewall: deny by default, allow only deployer IP and VM public IP.
+  # AzureServices bypass keeps platform integrations working without private endpoint.
+  network_acls {
+    default_action = "Deny"
+    bypass         = "AzureServices"
+    ip_rules       = compact([local.allowed_ip, azurerm_public_ip.main.ip_address])
+  }
 }
 
 # Grant the deployer (current user/SP) "Key Vault Secrets Officer" role
@@ -347,7 +363,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   size                            = var.vm_size
   admin_username                  = var.admin_username
   admin_password                  = local.admin_password
-  disable_password_authentication = false # Allow both SSH key and password auth
+  disable_password_authentication = true # SSH key-only; password used for dashboard Basic Auth
 
   network_interface_ids = [azurerm_network_interface.main.id]
 
@@ -376,18 +392,21 @@ resource "azurerm_linux_virtual_machine" "main" {
     type = "SystemAssigned"
   }
 
-  # Cloud-init provisioning — installs Docker, Azure CLI, writes config files
+  # Cloud-init provisioning — installs Docker (for Nginx), Node.js, pnpm,
+  # OpenClaw, and writes config files. OpenClaw runs as a systemd service.
   # The cloud-init template receives pre-rendered file contents from templates/
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yml", {
-    admin_username      = var.admin_username
-    keyvault_name       = azurerm_key_vault.main.name
-    fqdn                = local.fqdn
-    file_docker_compose = file("${path.module}/templates/docker-compose.yml")
-    file_openclaw_json  = file("${path.module}/templates/openclaw.json")
-    file_nginx_conf     = templatefile("${path.module}/templates/nginx.conf", { fqdn = local.fqdn })
-    file_start_sh       = templatefile("${path.module}/templates/start.sh", { keyvault_name = azurerm_key_vault.main.name, fqdn = local.fqdn })
-    file_stop_sh        = file("${path.module}/templates/stop.sh")
-    file_clone_repo_sh  = templatefile("${path.module}/templates/clone-repo.sh", { keyvault_name = azurerm_key_vault.main.name })
+    admin_username        = var.admin_username
+    keyvault_name         = azurerm_key_vault.main.name
+    fqdn                  = local.fqdn
+    file_docker_compose   = file("${path.module}/templates/docker-compose.yml")
+    file_openclaw_json    = file("${path.module}/templates/openclaw.json")
+    file_nginx_conf       = replace(file("${path.module}/templates/nginx.conf"), "__FQDN__", local.fqdn)
+    file_start_sh         = templatefile("${path.module}/templates/start.sh", { keyvault_name = azurerm_key_vault.main.name, fqdn = local.fqdn })
+    file_stop_sh          = file("${path.module}/templates/stop.sh")
+    file_clone_repo_sh    = templatefile("${path.module}/templates/clone-repo.sh", { keyvault_name = azurerm_key_vault.main.name })
+    file_openclaw_service = templatefile("${path.module}/templates/openclaw.service", { admin_username = var.admin_username })
+    file_daemon_json      = file("${path.module}/templates/daemon.json")
   }))
 }
 

@@ -63,14 +63,13 @@ echo ""
 
 # -- Step 2: Collect secrets (optional) --
 step 2 "Collecting secrets (optional — press Enter to skip)..."
-TF_VARS=()
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
     read -rsp "  GitHub PAT (Enter to skip): " GITHUB_TOKEN
     echo ""
 fi
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-    TF_VARS+=(-var "github_pat=${GITHUB_TOKEN}")
+    export TF_VAR_github_pat="$GITHUB_TOKEN"
     log "  GitHub PAT provided (${#GITHUB_TOKEN} chars)"
 else
     warn "GITHUB_TOKEN not set — skipping"
@@ -81,7 +80,7 @@ if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo ""
 fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    TF_VARS+=(-var "anthropic_key=${ANTHROPIC_API_KEY}")
+    export TF_VAR_anthropic_key="$ANTHROPIC_API_KEY"
     log "  Anthropic API Key provided (${#ANTHROPIC_API_KEY} chars)"
 else
     warn "ANTHROPIC_API_KEY not set — skipping"
@@ -99,7 +98,7 @@ echo ""
 step 4 "Applying Terraform configuration..."
 log "  This will create all Azure resources. Please wait..."
 echo ""
-terraform apply ${TF_VARS[@]+"${TF_VARS[@]}"} -auto-approve
+terraform apply -auto-approve
 log "  Terraform apply completed"
 echo ""
 

@@ -1,0 +1,10 @@
+# Enforce Unix line endings for all text files
+* text=auto eol=lf
+
+# Explicitly mark binary files
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Terraform lock file should not be diffed
+.terraform.lock.hcl linguist-generated

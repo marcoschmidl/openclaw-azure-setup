@@ -1,6 +1,6 @@
 # OpenClaw GitHub Agent — Azure VM Deployment
 
-Deploys an Ubuntu 24.04 VM on Azure with Docker, OpenClaw running in a container,
+Deploys an Ubuntu 24.04 VM on Azure with Docker, OpenClaw running as a systemd host process,
 Nginx reverse proxy (Basic Auth + SSL), Key Vault for secrets, and auto-shutdown.
 
 ## Architecture
@@ -88,6 +88,10 @@ Terraform:
   make output           Show all Terraform outputs
   make fmt              Format Terraform files
   make validate         Validate Terraform configuration
+
+Memory:
+  make memory-sync-template  Generate Basic Memory update template
+  make install-pre-commit    Install local pre-commit memory guard
 ```
 
 ## Deployment Options
@@ -151,6 +155,31 @@ make openclaw-stop       # When done
 make stop                # Deallocate VM (no compute costs)
 ```
 
+## PR Checklist (incl. Memory)
+
+Before opening or merging a PR:
+
+```bash
+# Infra/script checks
+make fmt
+make validate
+bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
+
+# Basic Memory update template
+make memory-sync-template
+
+# Then update affected notes in ai/basic-memory/notes/
+```
+
+Optional (recommended once per clone):
+
+```bash
+make install-pre-commit
+```
+
+This hook blocks commits with infra/ops changes when no file in
+`ai/basic-memory/notes/*.md` is staged.
+
 ## Costs
 
 | State | Cost (approx.) |
@@ -165,13 +194,16 @@ Auto-shutdown at 22:00 UTC prevents forgotten running VMs.
 ## Security
 
 - **NSG**: SSH + HTTPS only from your IP, everything else blocked
+- **SSH**: Key-only authentication (password auth disabled)
 - **Basic Auth**: Dashboard protected via Nginx with password
-- **SSL**: Self-signed certificate on Azure FQDN
-- **Key Vault**: Secrets never stored on disk, loaded by `start.sh` and removed by `stop.sh`
+- **SSL**: Self-signed certificate on Azure FQDN with security headers (HSTS, CSP, X-Frame-Options)
+- **Key Vault**: Firewall enabled (default deny), secrets fetched at runtime, local `.env` removed by `stop.sh`
 - **Managed Identity**: VM authenticates to Key Vault without credentials
-- **Container Isolation**: Nginx + OpenClaw run in Docker
+- **Docker Hardening**: Read-only containers, cap_drop ALL, log rotation via daemon.json
+- **systemd Hardening**: ProtectSystem=strict, ProtectHome=read-only, NoNewPrivileges
+- **fail2ban**: SSH brute-force protection
+- **Unattended Upgrades**: Automatic security patches
 - **Auto-Shutdown**: Failsafe against forgotten VMs
-- **Dual Auth**: SSH via key or password
 
 ## Files
 
@@ -183,12 +215,17 @@ Auto-shutdown at 22:00 UTC prevents forgotten running VMs.
 | `.env.example` | Template for secrets |
 | `deploy.sh` | Interactive wrapper for Terraform |
 | `destroy.sh` | Deletes all resources + Terraform state |
-| `templates/docker-compose.yml` | Docker Compose: Nginx + OpenClaw containers |
+| `templates/docker-compose.yml` | Docker Compose: Nginx reverse proxy container |
 | `templates/openclaw.json` | OpenClaw agent configuration |
-| `templates/nginx.conf` | Nginx reverse proxy (SSL + Basic Auth) |
-| `templates/start.sh` | Loads Key Vault secrets, sets htpasswd, starts Docker |
-| `templates/stop.sh` | Stops Docker, removes local secrets |
+| `templates/openclaw.service` | systemd unit for OpenClaw host process |
+| `templates/nginx.conf` | Nginx reverse proxy (SSL + Basic Auth + security headers) |
+| `templates/daemon.json` | Docker daemon config (log rotation) |
+| `templates/start.sh` | Loads Key Vault secrets, sets htpasswd, starts services |
+| `templates/stop.sh` | Stops services, removes local secrets |
 | `templates/clone-repo.sh` | Clones GitHub repos (optionally with PAT auth) |
+| `ai/basic-memory/README.md` | Basic Memory setup and note conventions |
+| `ai/basic-memory/notes/*.md` | Persisted project knowledge notes |
+| `ai/skills/basic-memory-state-sync/run.sh` | Generates memory update template from git changes |
 
 ## Customization
 

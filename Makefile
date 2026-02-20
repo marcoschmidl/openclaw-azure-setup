@@ -17,8 +17,13 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# Load .env file if it exists (contains GITHUB_TOKEN, ANTHROPIC_API_KEY)
--include .env
+# Load .env file if it exists (contains GITHUB_TOKEN, ANTHROPIC_API_KEY).
+# Using ?= so that environment variables (e.g. GITHUB_TOKEN=xxx make deploy)
+# take precedence over values from the .env file.
+ifneq (,$(wildcard .env))
+  GITHUB_TOKEN    ?= $(shell grep '^GITHUB_TOKEN=' .env 2>/dev/null | cut -d= -f2-)
+  ANTHROPIC_API_KEY ?= $(shell grep '^ANTHROPIC_API_KEY=' .env 2>/dev/null | cut -d= -f2-)
+endif
 export
 
 # -- Variables (can be overridden via environment or command line) --
@@ -26,16 +31,15 @@ RG            ?= rg-openclaw
 VM            ?= vm-openclaw
 TF_VARS       ?=
 EXTRA_TF_VARS ?=
-TF_SECRET_VARS =
-ALL_TF_VARS   = $(strip $(TF_VARS) $(EXTRA_TF_VARS) $(TF_SECRET_VARS))
+ALL_TF_VARS   = $(strip $(TF_VARS) $(EXTRA_TF_VARS))
 
-# Pass secrets as Terraform variables if they are set
+# Pass secrets via TF_VAR_ environment variables (not visible in ps aux)
 ifneq ($(strip $(GITHUB_TOKEN)),)
-  TF_SECRET_VARS += -var="github_pat=$(GITHUB_TOKEN)"
+  export TF_VAR_github_pat := $(GITHUB_TOKEN)
 endif
 
 ifneq ($(strip $(ANTHROPIC_API_KEY)),)
-  TF_SECRET_VARS += -var="anthropic_key=$(ANTHROPIC_API_KEY)"
+  export TF_VAR_anthropic_key := $(ANTHROPIC_API_KEY)
 endif
 
 # -- Helper: Check if a tool is installed --
@@ -72,6 +76,12 @@ deploy: init ## Deploy infrastructure (terraform apply)
 	@echo "  Password:  make show-password"
 	@echo "  SSH:       make ssh"
 	@echo ""
+
+.PHONY: redeploy-vm
+redeploy-vm: init ## Recreate the VM (applies new cloud-init)
+	terraform apply $(ALL_TF_VARS) -replace=azurerm_linux_virtual_machine.main -auto-approve
+	@echo ""
+	@echo "[make] VM recreated. Wait ~5 min for cloud-init, then run: make openclaw-start"
 
 .PHONY: destroy
 destroy: ## Delete all Azure resources and local state
@@ -133,11 +143,11 @@ show-password-kv: ## Retrieve admin password from Key Vault
 # ==========================================================
 
 .PHONY: logs
-logs: ## Show OpenClaw container logs (last 100 lines)
+logs: ## Show OpenClaw service logs (last 100 lines)
 	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Fetching OpenClaw logs from $$FQDN..."; \
-	ssh "$$USER@$$FQDN" 'docker logs --tail 100 openclaw-github-agent 2>&1'
+	ssh "$$USER@$$FQDN" 'sudo journalctl -u openclaw --no-pager -n 100'
 
 .PHONY: logs-nginx
 logs-nginx: ## Show Nginx container logs (last 100 lines)
@@ -166,6 +176,27 @@ docker-ps: ## Show Docker container status on VM
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Fetching container status from $$FQDN..."; \
 	ssh "$$USER@$$FQDN" 'docker ps -a'
+
+.PHONY: devices-list
+devices-list: ## List pending/paired Control UI devices
+	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
+	USER=$$(terraform output -raw admin_username 2>/dev/null); \
+	KV=$$(terraform output -raw keyvault_name 2>/dev/null); \
+	echo "[make] Listing pending Control UI devices on $$FQDN..."; \
+	ssh "$$USER@$$FQDN" "PASS=\$$(az keyvault secret show --vault-name '$$KV' --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=~/openclaw/config/openclaw.json && ~/.local/bin/openclaw devices list --url ws://127.0.0.1:18789 --password \"\$$PASS\""
+
+.PHONY: approve-device
+approve-device: ## Approve pending Control UI device (use REQUEST_ID=<id>)
+	@if [ -z "$(REQUEST_ID)" ]; then \
+		echo "Error: REQUEST_ID is required"; \
+		echo "Usage: make approve-device REQUEST_ID=<request-id>"; \
+		exit 1; \
+	fi
+	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
+	USER=$$(terraform output -raw admin_username 2>/dev/null); \
+	KV=$$(terraform output -raw keyvault_name 2>/dev/null); \
+	echo "[make] Approving device request $(REQUEST_ID) on $$FQDN..."; \
+	ssh "$$USER@$$FQDN" "PASS=\$$(az keyvault secret show --vault-name '$$KV' --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=~/openclaw/config/openclaw.json && ~/.local/bin/openclaw devices approve $(REQUEST_ID) --url ws://127.0.0.1:18789 --password \"\$$PASS\""
 
 # ==========================================================
 # OpenClaw Start / Stop (on VM via SSH)
@@ -200,6 +231,16 @@ fmt: ## Format Terraform files
 .PHONY: validate
 validate: init ## Validate Terraform configuration
 	terraform validate
+
+.PHONY: memory-sync-template
+memory-sync-template: ## Generate Basic Memory update template
+	./ai/skills/basic-memory-state-sync/run.sh
+
+.PHONY: install-pre-commit
+install-pre-commit: ## Install local git pre-commit hook for memory checks
+	cp .githooks/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "[make] Installed .git/hooks/pre-commit"
 
 # ==========================================================
 # Help

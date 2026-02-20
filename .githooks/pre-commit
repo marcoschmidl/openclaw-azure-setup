@@ -1,0 +1,40 @@
+#!/bin/bash
+set -euo pipefail
+
+# Skip explicitly when needed, e.g.:
+#   SKIP_MEMORY_CHECK=1 git commit -m "..."
+if [ "${SKIP_MEMORY_CHECK:-0}" = "1" ]; then
+  exit 0
+fi
+
+INFRA_PATTERNS_REGEX='^(README\.md|AGENTS\.md|Makefile|main\.tf|cloud-init\.yml|deploy\.sh|destroy\.sh|templates/|ai/skills/)'
+MEMORY_NOTES_REGEX='^ai/basic-memory/notes/.*\.md$'
+
+STAGED_FILES="$(git diff --cached --name-only)"
+
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+
+INFRA_CHANGED=0
+MEMORY_CHANGED=0
+
+while IFS= read -r file; do
+  if [[ "$file" =~ $INFRA_PATTERNS_REGEX ]]; then
+    INFRA_CHANGED=1
+  fi
+
+  if [[ "$file" =~ $MEMORY_NOTES_REGEX ]]; then
+    MEMORY_CHANGED=1
+  fi
+done <<< "$STAGED_FILES"
+
+if [ "$INFRA_CHANGED" -eq 1 ] && [ "$MEMORY_CHANGED" -eq 0 ]; then
+  printf '%s\n' "[pre-commit] Infra/ops changes detected, but no Memory note update staged."
+  printf '%s\n' "[pre-commit] Please update at least one file in ai/basic-memory/notes/*.md"
+  printf '%s\n' "[pre-commit] Tip: make memory-sync-template"
+  printf '%s\n' "[pre-commit] Bypass once: SKIP_MEMORY_CHECK=1 git commit -m \"...\""
+  exit 1
+fi
+
+exit 0

@@ -4,8 +4,9 @@ set -euo pipefail
 # ==========================================================
 # OpenClaw — Stop Script
 # ==========================================================
-# Stops all Docker containers and removes the local .env file
-# containing secrets (secrets remain safe in Key Vault).
+# Stops the OpenClaw systemd service and the Nginx Docker
+# container. Removes the local .env file containing secrets
+# (secrets remain safe in Key Vault).
 #
 # Usage:
 #   cd ~/openclaw && ./stop.sh
@@ -21,18 +22,24 @@ log "Stopping OpenClaw..."
 log "  Working directory: $WORK_DIR"
 echo ""
 
-# -- Step 1: Show current container status --
-log "Current container status:"
+# -- Step 1: Show current status --
+log "Current status:"
+echo "  OpenClaw service: $(systemctl is-active openclaw 2>/dev/null || echo 'inactive')"
 cd "$WORK_DIR"
 docker compose ps 2>/dev/null || true
 echo ""
 
-# -- Step 2: Stop and remove containers --
-log "Stopping Docker containers..."
-docker compose down
-log "  Containers stopped and removed"
+# -- Step 2: Stop OpenClaw systemd service --
+log "Stopping OpenClaw service (systemd)..."
+sudo systemctl stop openclaw 2>/dev/null || true
+log "  OpenClaw service stopped"
 
-# -- Step 3: Clean up local secrets --
+# -- Step 3: Stop and remove Nginx container --
+log "Stopping Nginx container (Docker)..."
+docker compose down
+log "  Nginx container stopped and removed"
+
+# -- Step 4: Clean up local secrets --
 if [ -f "$WORK_DIR/.env" ]; then
     rm -f "$WORK_DIR/.env"
     log "  Removed .env file (secrets cleaned up)"
@@ -40,7 +47,7 @@ else
     log "  No .env file found (already clean)"
 fi
 
-# -- Step 4: Clean up htpasswd --
+# -- Step 5: Clean up htpasswd --
 if [ -f "$WORK_DIR/nginx/.htpasswd" ]; then
     rm -f "$WORK_DIR/nginx/.htpasswd"
     log "  Removed htpasswd file"

@@ -1,91 +1,165 @@
 # AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agentic coding tools operating in this repository.
 
-## Project Overview
+Canonical AI docs also exist under `ai/` (`ai/AGENTS.md`, `ai/CLAUDE.md`, `ai/skills/`).
 
-Infrastructure-as-code repo that deploys the OpenClaw GitHub agent on an Azure VM (Ubuntu 24.04) with Docker, Nginx reverse proxy (SSL + Basic Auth), Azure Key Vault for secrets, and auto-shutdown. Documentation uses ASCII-safe German (ue/oe/ae instead of umlauts).
+## 1) Project intent and architecture
 
-## Commands
+- This repo deploys OpenClaw on Azure using Terraform.
+- OpenClaw runs as a **systemd host process** on an Ubuntu VM.
+- Nginx runs as a Docker container and provides SSL + Basic Auth reverse proxying.
+- Azure Key Vault stores secrets (`github-pat`, `anthropic-key`, admin credentials).
+- `cloud-init.yml` writes templates and provisions the VM at first boot.
 
-### Deployment
+## 2) Cursor/Copilot repository rules
+
+- Checked for Cursor rules in `.cursor/rules/`: none found.
+- Checked for `.cursorrules`: none found.
+- Checked for Copilot instructions in `.github/copilot-instructions.md`: none found.
+- If those files are later added, treat them as highest-priority repo-local agent rules.
+
+## 3) Setup and prerequisites
+
+- Required tools: `terraform` (>= 1.5), `az`, `bash`, `ssh`.
+- Optional local secrets file: `.env` (from `.env.example`).
+- Authenticate Azure CLI before infra operations: `az login`.
+- Terraform providers are pinned in `main.tf` and `.terraform.lock.hcl`.
+
+## 4) Build, lint, validate, test commands
+
+### Core workflow
+
 ```bash
-make deploy              # terraform init + apply (reads .env for secrets)
-make plan                # dry-run / preview changes
-make destroy             # interactive destroy via destroy.sh
+make init
+make fmt
+make validate
+make plan
+make deploy
 ```
 
-### Validation (run before PRs)
+### Lint/validation commands
+
 ```bash
-make fmt                 # terraform fmt
-make validate            # terraform validate
-bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh  # syntax-check shell scripts
+make fmt
+make validate
+bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
 ```
 
-### VM Lifecycle
+### "Single test" / targeted checks (important for agents)
+
+Use these when you only changed one area:
+
 ```bash
-make start / stop / restart / status
-make ssh                 # SSH into VM
-make show-password       # admin password from tfstate
-make show-password-kv    # admin password from Key Vault
+# Single shell script syntax check
+bash -n templates/start.sh
+
+# Check multiple specific scripts only
+bash -n deploy.sh templates/clone-repo.sh
+
+# Format-check a single Terraform file via standard formatter
+terraform fmt -check main.tf
+
+# Validate full Terraform graph after any TF change
+terraform validate
 ```
 
-### OpenClaw on VM
+Notes:
+- There is no dedicated unit test framework in this repo today.
+- Treat `bash -n` and `terraform validate` as the effective test gates.
+
+## 5) Deployment and safety conventions
+
+- Prefer `make ...` targets over ad-hoc commands.
+- `make destroy` / `./destroy.sh` is destructive; do not run unless explicitly required.
+- Never commit secrets (`.env`, `*.tfvars`, state outputs containing sensitive values).
+- Do not alter `.gitignore` to allow secret files.
+
+## 6) Code style guidelines
+
+### Terraform (`main.tf`)
+
+- Keep infrastructure in the existing single-root-module style unless explicitly refactoring.
+- Run `terraform fmt` after edits; keep canonical HCL formatting.
+- Use clear variable descriptions and preserve sensitive flags for secret inputs.
+- Naming convention: Azure resources use `openclaw`-prefixed names where applicable.
+- Preserve provider/version constraints unless there is a deliberate upgrade.
+- Prefer `locals` for resolved defaults and reused computed values.
+- Keep comments concise and focused on non-obvious intent.
+- Avoid introducing unnecessary abstraction or over-modularization.
+
+### Shell (`*.sh` and `templates/*.sh`)
+
+- Shebang + strict mode required: `#!/bin/bash` and `set -euo pipefail`.
+- Quote variable expansions unless intentional word-splitting is required.
+- Use uppercase for constants/env-like vars (`KEYVAULT`, `WORK_DIR`, `TOTAL_STEPS`).
+- Keep helper logging functions (`log`, `warn`, `err`, `step`) consistent.
+- Fail fast for hard prerequisites; use warnings only for optional behavior.
+- For commands that can fail non-fatally, handle explicitly (`|| true` with reason).
+- Use readable step-based flow in long operational scripts.
+- Keep scripts idempotent where practical (safe to re-run).
+
+### YAML/templates (`cloud-init.yml`, `templates/*`)
+
+- Preserve indentation strictly; cloud-init is whitespace-sensitive.
+- Keep template variable names explicit and aligned with `main.tf` injection keys.
+- When embedding shell in Terraform templates, handle `$` escaping correctly.
+- Prefer comments that explain provisioning intent, not obvious syntax.
+
+### Makefile
+
+- Add new targets as `.PHONY` with `##` help text.
+- Reuse existing variables (`RG`, `VM`, `ALL_TF_VARS`) instead of duplicating logic.
+- Keep target output operator-friendly and concise.
+
+## 7) Imports, types, naming, and formatting specifics
+
+- Imports: N/A for Terraform/HCL; for shell, prefer direct command usage with prerequisite checks.
+- Types: explicitly set Terraform variable `type` for non-trivial or sensitive inputs.
+- Naming:
+  - Files: lowercase, hyphen-separated (`clone-repo.sh`, `cloud-init.yml`).
+  - Terraform resources/data: descriptive names (`main`, `my_ip`, `admin_password`).
+  - Env vars: uppercase snake case.
+- Formatting:
+  - HCL via `terraform fmt`.
+  - Shell formatting should stay consistent with existing indentation style.
+  - Repository line endings are LF (`.gitattributes`).
+
+## 8) Error handling expectations
+
+- Prefer explicit checks before side-effecting operations (`command -v`, login checks, file existence checks).
+- Use clear actionable error messages (what failed + how to fix).
+- In Terraform, favor validation/postcondition-style guardrails when adding risky inputs.
+- In scripts, separate hard failures (`err`) from recoverable paths (`warn`).
+
+## 9) Security and secret handling
+
+- Never print full secret values in logs.
+- `.env` is local-only and ignored by git.
+- Key Vault is source of truth for runtime secrets on VM.
+- `start.sh` may materialize temporary local secret files; `stop.sh` cleans them.
+- Preserve restrictive file permissions for secret-bearing files (`chmod 600`).
+
+## 10) Change checklist for agents
+
+Before finishing a change:
+
 ```bash
-make openclaw-start      # start containers via SSH
-make openclaw-stop       # stop containers via SSH
-make logs                # openclaw container logs
-make logs-nginx          # nginx container logs
-make docker-ps           # container status
-make cloud-init-status   # provisioning status
+make fmt
+make validate
+bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
+make plan
 ```
 
-### Override variables
-```bash
-make deploy EXTRA_TF_VARS='-var="vm_size=Standard_B2ms"'
-make deploy EXTRA_TF_VARS='-var="allowed_ip=1.2.3.4"'
-```
+For small edits, run the smallest relevant targeted checks first, then full validation if Terraform changed.
 
-## Architecture
+## 11) Cross-provider skills (OpenCode + Claude)
 
-Single `main.tf` Terraform root module (no child modules). All Azure resources in one file:
-- Resource Group, VNet/Subnet/NSG, Public IP with DNS label, NIC
-- Key Vault (RBAC mode) with optional secrets (`github-pat`, `anthropic-key`) and always-present admin credentials
-- Linux VM with system-assigned managed identity (for Key Vault access without stored credentials)
-- Auto-shutdown schedule
-
-### Template rendering pipeline
-`main.tf` renders `cloud-init.yml` via `templatefile()`, injecting the contents of `templates/*` files as template variables. Some templates are double-rendered: `nginx.conf`, `start.sh`, and `clone-repo.sh` pass through `templatefile()` first (for `${fqdn}` / `${keyvault_name}` interpolation), then get embedded into `cloud-init.yml`. Others (`docker-compose.yml`, `openclaw.json`, `stop.sh`) are read verbatim with `file()`.
-
-### Runtime on the VM
-`cloud-init` installs Docker, Azure CLI, writes config files to `~/openclaw/`, generates a self-signed SSL cert, and pre-pulls images. At runtime:
-1. `start.sh` authenticates via managed identity, fetches secrets from Key Vault, writes a `.env` for Docker Compose, sets up htpasswd, and runs `docker compose up -d`
-2. `stop.sh` runs `docker compose down` and removes the `.env` and `.htpasswd` files (secrets never persist on disk)
-3. Two containers: `openclaw-nginx` (SSL termination + Basic Auth proxy) and `openclaw-github-agent` (the agent on internal port 18789)
-
-### Secrets flow
-`.env` file (local) -> Makefile reads it -> passes as `-var` to Terraform -> stored in Key Vault -> `start.sh` on VM fetches from Key Vault at runtime -> written to ephemeral `.env` in `~/openclaw/` -> cleaned up by `stop.sh`.
-
-## Coding Conventions
-
-- **Terraform**: format with `terraform fmt` before commit. Resource names use `openclaw-*` prefix (e.g., `vnet-openclaw`, `nsg-openclaw`). Keep all resources in `main.tf`.
-- **Shell scripts**: `#!/bin/bash` + `set -euo pipefail`. Constants uppercase (`KEYVAULT`, `TOTAL_STEPS`). Use colored log/warn/err/step helpers consistently.
-- **Filenames**: lowercase, hyphenated (`cloud-init.yml`, `clone-repo.sh`).
-- **Commits**: Conventional Commits format (e.g., `feat(terraform): add configurable vm size`, `fix(makefile): handle missing terraform outputs`).
-- **Templates with `$$`**: In Terraform-rendered shell templates (`start.sh`, `clone-repo.sh`), use `$$` to escape literal `$` for shell variable expansion (Terraform's `templatefile()` interprets single `$`).
-
-## Pre-PR Checklist
-
-- `make fmt` + `make validate` + `make plan`
-- `bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh`
-- Include a short `make plan` summary in the PR when changing Terraform resources.
-
-## Key Terraform Variables
-
-All have sensible defaults; `admin_password` and `dns_label` auto-generate if empty. `github_pat` and `anthropic_key` are optional — corresponding Key Vault secrets are only created when non-empty. `allowed_ip` auto-detects via ipify.org if not set.
-
-## Prerequisites
-
-- Terraform >= 1.5
-- Azure CLI (logged in via `az login`)
-- SSH key (default `~/.ssh/id_rsa.pub`, configurable via `ssh_public_key_path` variable)
+- Source of truth for reusable workflows: `ai/skills/`.
+- Skill files must be provider-neutral Markdown plus optional executable scripts.
+- Preferred skill layout:
+  - `ai/skills/<skill-name>/README.md` (goal, inputs, steps, output format).
+  - `ai/skills/<skill-name>/run.sh` (optional automation).
+  - `ai/skills/<skill-name>/examples/` (optional examples).
+- Keep skills usable by both Codex and Claude: avoid provider-only commands/features.
+- If `CLAUDE.md` exists, treat it as a thin pointer to `AGENTS.md` + `ai/skills/`.

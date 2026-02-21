@@ -1,0 +1,155 @@
+---
+# Create a dedicated openclaw system user with scoped sudo privileges.
+# Separates SSH admin (clawadmin) from service user (openclaw).
+
+- name: Create openclaw system user
+  ansible.builtin.user:
+    name: "{{ openclaw_user }}"
+    comment: "OpenClaw Service User"
+    system: true
+    shell: /bin/bash
+    create_home: true
+    home: "{{ openclaw_home }}"
+    state: present
+
+- name: Ensure openclaw home directory has correct ownership
+  ansible.builtin.file:
+    path: "{{ openclaw_home }}"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    state: directory
+    mode: "0755"
+
+- name: Configure .bashrc for openclaw user
+  ansible.builtin.blockinfile:
+    path: "{{ openclaw_home }}/.bashrc"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - OpenClaw config"
+    block: |
+      # Enable 256 colors
+      export TERM=xterm-256color
+
+      # Add pnpm to PATH
+      export PNPM_HOME="{{ openclaw_home }}/.local/share/pnpm"
+      export PATH="{{ openclaw_home }}/.local/bin:$PNPM_HOME:$PATH"
+
+      # Aliases
+      alias ls='ls --color=auto'
+      alias grep='grep --color=auto'
+      alias ll='ls -lah'
+    create: true
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+
+- name: Add openclaw user to sudoers with scoped NOPASSWD
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/openclaw
+    mode: "0440"
+    owner: root
+    group: root
+    content: |
+      # OpenClaw sudo permissions (scoped for security)
+      #
+      # SECURITY NOTE: These permissions are intentionally limited.
+      # If openclaw is compromised, attackers can only:
+      # - Manage the openclaw service
+      # - View openclaw logs
+
+      # Service control - openclaw service only
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openclaw
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop openclaw
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart openclaw
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status openclaw
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable openclaw
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable openclaw
+      # daemon-reload affects all units (required after service file changes)
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+
+      # Journal access - openclaw logs only
+      {{ openclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw *
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Create .bash_profile to source .bashrc for login shells
+  ansible.builtin.copy:
+    dest: "{{ openclaw_home }}/.bash_profile"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+    content: |
+      # Source .bashrc for login shells
+      if [ -f ~/.bashrc ]; then
+          . ~/.bashrc
+      fi
+
+# -- Systemd user service support --
+
+- name: Get openclaw user ID
+  ansible.builtin.command: id -u {{ openclaw_user }}
+  register: openclaw_uid
+  changed_when: false
+  when: not (openclaw_ci_test | default(false))
+
+- name: Store openclaw UID as fact
+  ansible.builtin.set_fact:
+    openclaw_uid_value: "{{ openclaw_uid.stdout }}"
+  when: not (openclaw_ci_test | default(false))
+
+- name: Enable lingering for openclaw user (allows systemd services without login)
+  ansible.builtin.command: loginctl enable-linger {{ openclaw_user }}
+  changed_when: false
+  when: not (openclaw_ci_test | default(false))
+
+- name: Create runtime directory for openclaw user
+  ansible.builtin.file:
+    path: "/run/user/{{ openclaw_uid.stdout }}"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0700"
+  when: not (openclaw_ci_test | default(false))
+
+- name: Set XDG_RUNTIME_DIR in .bashrc
+  ansible.builtin.lineinfile:
+    path: "{{ openclaw_home }}/.bashrc"
+    line: 'export XDG_RUNTIME_DIR=/run/user/$(id -u)'
+    state: present
+  when: not (openclaw_ci_test | default(false))
+
+- name: Configure DBus session bus in .bashrc
+  ansible.builtin.blockinfile:
+    path: "{{ openclaw_home }}/.bashrc"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - DBus config"
+    block: |
+      if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+        if [ -f "${XDG_RUNTIME_DIR}/bus" ]; then
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+        fi
+      fi
+    create: true
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+  when: not (openclaw_ci_test | default(false))
+
+# -- SSH key configuration --
+
+- name: Create .ssh directory for openclaw user
+  ansible.builtin.file:
+    path: "{{ openclaw_home }}/.ssh"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0700"
+
+- name: Add SSH authorized keys for openclaw user
+  ansible.posix.authorized_key:
+    user: "{{ openclaw_user }}"
+    state: present
+    key: "{{ item }}"
+  loop: "{{ openclaw_ssh_keys }}"
+  when: openclaw_ssh_keys | length > 0
+
+- name: Display SSH key warning if none configured
+  ansible.builtin.debug:
+    msg: "No SSH keys configured for {{ openclaw_user }}. Set 'openclaw_ssh_keys' to allow direct SSH access."
+  when: openclaw_ssh_keys | length == 0

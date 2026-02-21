@@ -1,0 +1,139 @@
+---
+# Install OpenClaw and deploy all configuration/runtime files.
+
+- name: Validate openclaw_install_mode
+  ansible.builtin.assert:
+    that:
+      - openclaw_install_mode in ["release", "development"]
+    fail_msg: "Invalid openclaw_install_mode: '{{ openclaw_install_mode }}'. Must be 'release' or 'development'."
+
+- name: Create OpenClaw directory structure
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ openclaw_config_dir }}", mode: "0755" }
+    - { path: "{{ openclaw_config_dir }}/sessions", mode: "0755" }
+    - { path: "{{ openclaw_config_dir }}/credentials", mode: "0700" }
+    - { path: "{{ openclaw_config_dir }}/data", mode: "0755" }
+    - { path: "{{ openclaw_config_dir }}/logs", mode: "0755" }
+    - { path: "{{ openclaw_dir }}", mode: "0755" }
+    - { path: "{{ openclaw_dir }}/config", mode: "0755" }
+    - { path: "{{ openclaw_dir }}/workspace", mode: "0755" }
+    - { path: "{{ openclaw_dir }}/nginx", mode: "0755" }
+    - { path: "{{ openclaw_dir }}/nginx/ssl", mode: "0755" }
+    - { path: "{{ openclaw_dir }}/nginx/logs", mode: "0755" }
+
+- name: Create pnpm directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0755"
+  loop:
+    - "{{ openclaw_home }}/.local/share/pnpm"
+    - "{{ openclaw_home }}/.local/share/pnpm/store"
+    - "{{ openclaw_home }}/.local/bin"
+
+- name: Ensure pnpm directories ownership (recursive safety net)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    recurse: true
+  loop:
+    - "{{ openclaw_home }}/.local/share/pnpm"
+    - "{{ openclaw_home }}/.local/bin"
+
+- name: Configure pnpm for openclaw user
+  ansible.builtin.shell:
+    cmd: |
+      CURRENT_GLOBAL_DIR=$(pnpm config get global-dir 2>/dev/null || echo "")
+      CURRENT_BIN_DIR=$(pnpm config get global-bin-dir 2>/dev/null || echo "")
+      CHANGED=0
+      if [ "$CURRENT_GLOBAL_DIR" != "{{ openclaw_home }}/.local/share/pnpm" ]; then
+        pnpm config set global-dir {{ openclaw_home }}/.local/share/pnpm
+        CHANGED=1
+      fi
+      if [ "$CURRENT_BIN_DIR" != "{{ openclaw_home }}/.local/bin" ]; then
+        pnpm config set global-bin-dir {{ openclaw_home }}/.local/bin
+        CHANGED=1
+      fi
+      exit $CHANGED
+    executable: /bin/bash
+  become: true
+  become_user: "{{ openclaw_user }}"
+  register: openclaw_pnpm_config_result
+  changed_when: openclaw_pnpm_config_result.rc == 1
+  failed_when: openclaw_pnpm_config_result.rc > 1
+
+- name: Install OpenClaw globally (release mode)
+  ansible.builtin.shell:
+    cmd: |
+      export PNPM_HOME="{{ openclaw_home }}/.local/share/pnpm"
+      export PATH="{{ openclaw_home }}/.local/bin:$PNPM_HOME:$PATH"
+      pnpm install -g openclaw@latest
+    executable: /bin/bash
+  become: true
+  become_user: "{{ openclaw_user }}"
+  when: openclaw_install_mode == "release"
+  register: openclaw_install
+  changed_when: "'Already up to date' not in (openclaw_install.stdout | default(''))"
+
+- name: Deploy OpenClaw configuration
+  ansible.builtin.template:
+    src: openclaw.json.j2
+    dest: "{{ openclaw_dir }}/config/openclaw.json"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+
+- name: Deploy start.sh
+  ansible.builtin.template:
+    src: start.sh.j2
+    dest: "{{ openclaw_dir }}/start.sh"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0755"
+
+- name: Deploy stop.sh
+  ansible.builtin.template:
+    src: stop.sh.j2
+    dest: "{{ openclaw_dir }}/stop.sh"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0755"
+
+- name: Deploy clone-repo.sh
+  ansible.builtin.template:
+    src: clone-repo.sh.j2
+    dest: "{{ openclaw_dir }}/clone-repo.sh"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0755"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ openclaw_dir }}/docker-compose.yml"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+
+- name: Configure pnpm PATH in .bashrc
+  ansible.builtin.blockinfile:
+    path: "{{ openclaw_home }}/.bashrc"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - OpenClaw pnpm"
+    block: |
+      export PNPM_HOME="{{ openclaw_home }}/.local/share/pnpm"
+      export PATH="{{ openclaw_home }}/.local/bin:$PNPM_HOME:$PATH"
+    create: true
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+    insertafter: EOF

@@ -1,0 +1,85 @@
+---
+# ==========================================================
+# OpenClaw Azure VM — Ansible Playbook
+# ==========================================================
+# Configures an Azure VM after Terraform + cloud-init bootstrap.
+# Run via: make configure
+#
+# Variables are passed as environment variables from the Makefile:
+#   KEYVAULT_NAME   — Azure Key Vault name (from terraform output)
+#   VM_FQDN         — VM fully qualified domain name
+#   ADMIN_USERNAME   — SSH admin username (Terraform var)
+# ==========================================================
+
+- name: Configure OpenClaw Azure VM
+  hosts: openclaw-vm
+  become: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    keyvault_name: "{{ lookup('env', 'KEYVAULT_NAME') }}"
+    fqdn: "{{ lookup('env', 'VM_FQDN') }}"
+    openclaw_admin_username: "{{ lookup('env', 'ADMIN_USERNAME') | default('clawadmin', true) }}"
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - keyvault_name | length > 0
+          - fqdn | length > 0
+          - openclaw_admin_username | length > 0
+        fail_msg: >-
+          Required variables missing. Run via 'make configure' which
+          populates KEYVAULT_NAME, VM_FQDN, and ADMIN_USERNAME from
+          Terraform outputs.
+
+    - name: Fail on unsupported OS
+      ansible.builtin.fail:
+        msg: "This playbook only supports Debian/Ubuntu. Detected: {{ ansible_os_family }}"
+      when: ansible_os_family != 'Debian'
+
+    - name: Wait for cloud-init to complete
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      timeout: 300
+
+    - name: Update apt cache and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+      when: not (openclaw_ci_test | default(false))
+
+    - name: Install ACL for privilege escalation
+      ansible.builtin.package:
+        name: acl
+        state: present
+
+    - name: Check if running as root
+      ansible.builtin.command: id -u
+      register: user_id
+      changed_when: false
+      become: false
+
+    - name: Set fact for root user
+      ansible.builtin.set_fact:
+        is_root: "{{ user_id.stdout == '0' }}"
+
+  roles:
+    - role: openclaw
+
+  post_tasks:
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          OpenClaw VM configuration complete!
+
+          Next step: make openclaw-start
+
+          This will:
+            - Fetch secrets from Azure Key Vault
+            - Configure Basic Auth for Nginx
+            - Start the OpenClaw systemd service
+            - Start the Nginx reverse proxy container
+
+          Dashboard: https://{{ fqdn }}

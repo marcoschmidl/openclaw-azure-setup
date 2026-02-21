@@ -1,0 +1,17 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": {{ openclaw_port }},
+    "bind": "lan",
+    "auth": {
+      "mode": "password"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "{{ openclaw_model }}"
+      }
+    }
+  }
+}

@@ -3,34 +3,31 @@
 Deploys an Ubuntu 24.04 VM on Azure with Docker, OpenClaw running as a systemd host process,
 Nginx reverse proxy (Basic Auth + SSL), Key Vault for secrets, and auto-shutdown.
 
+**Three-layer architecture:** Terraform (infrastructure) -> Cloud-Init (minimal bootstrap) -> Ansible (full VM configuration).
+
 ## Architecture
 
 ```
-Browser / SSH                       Azure
+Local Machine                       Azure
 ──────────────                ──────────────────────────
                               ┌─ Resource Group ────────┐
-https://<fqdn>  ──────────►   │  VM (Ubuntu 24.04)      │
-  (Basic Auth)                │  ├── Docker             │
+ terraform apply ──────────►  │  VM (Ubuntu 24.04)      │
+   (infra only)               │  ├── Docker             │
                               │  │   ├── Nginx (SSL)    │
-ssh user@<fqdn> ──────────►   │  │   │   └► :443/:80    │
-  (Key or Password)           │  │   └── OpenClaw       │
+ ansible-playbook ─── SSH ──► │  │   │   └► :443/:80    │
+   (full config)              │  │   └── OpenClaw       │
                               │  │       ├── Config     │
-                              │  │       └── Workspace  │
-                              │  └── Azure CLI          │
+https://<fqdn>  ──────────►   │  │       └── Workspace  │
+  (Basic Auth)                │  └── Azure CLI          │
                               │                         │
-                              │  Key Vault              │
-                              │  ├── github-pat    (opt)│
+ssh user@<fqdn> ──────────►   │  Key Vault              │
+  (Key only)                  │  ├── github-pat    (opt)│
                               │  ├── anthropic-key (opt)│
                               │  ├── admin-username     │
                               │  └── admin-password     │
                               │                         │
                               │  Public IP + DNS Label  │
-                              │  <label>.westeurope.    │
-                              │    cloudapp.azure.com   │
-                              │                         │
                               │  NSG: SSH+HTTPS only    │
-                              │       from your IP      │
-                              │                         │
                               │  Auto-Shutdown 22:00    │
                               └─────────────────────────┘
 ```
@@ -42,13 +39,19 @@ ssh user@<fqdn> ──────────►   │  │   │   └► :443
 cp .env.example .env
 #    Fill in GITHUB_TOKEN and ANTHROPIC_API_KEY
 
-# 2. Deploy
+# 2. Deploy infrastructure (Terraform)
 make deploy
 
-# 3. Start OpenClaw on the VM
+# 3. Wait for cloud-init bootstrap
+make wait-for-cloud-init
+
+# 4. Configure VM (Ansible)
+make configure
+
+# 5. Start OpenClaw on the VM
 make openclaw-start
 
-# 4. Open the dashboard
+# 6. Open the dashboard
 #    URL and password from make output / make show-password
 ```
 
@@ -76,6 +79,12 @@ Access:
 OpenClaw:
   make openclaw-start   Start OpenClaw + Nginx on VM
   make openclaw-stop    Stop OpenClaw + Nginx on VM
+
+Ansible:
+  make configure        Configure VM via Ansible playbook
+  make ansible-check    Dry-run Ansible (no changes)
+  make ansible-lint     Lint Ansible playbook and roles
+  make ansible-deps     Install Ansible Galaxy collections
 
 Logs & Debugging:
   make logs             OpenClaw container logs
@@ -163,7 +172,8 @@ Before opening or merging a PR:
 # Infra/script checks
 make fmt
 make validate
-bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
+bash -n deploy.sh destroy.sh
+ansible-lint ansible/playbook.yml
 
 # Basic Memory update template
 make memory-sync-template
@@ -207,22 +217,20 @@ Auto-shutdown at 22:00 UTC prevents forgotten running VMs.
 
 ## Files
 
-| File | Description |
+| File / Directory | Description |
 |---|---|
 | `Makefile` | Build targets for all operations |
 | `main.tf` | Terraform configuration (entire infrastructure) |
-| `cloud-init.yml` | VM provisioning template (references templates/) |
+| `cloud-init.yml` | Minimal bootstrap (Python3, pip, ACL for Ansible) |
 | `.env.example` | Template for secrets |
 | `deploy.sh` | Interactive wrapper for Terraform |
 | `destroy.sh` | Deletes all resources + Terraform state |
-| `templates/docker-compose.yml` | Docker Compose: Nginx reverse proxy container |
-| `templates/openclaw.json` | OpenClaw agent configuration |
-| `templates/openclaw.service` | systemd unit for OpenClaw host process |
-| `templates/nginx.conf` | Nginx reverse proxy (SSL + Basic Auth + security headers) |
-| `templates/daemon.json` | Docker daemon config (log rotation) |
-| `templates/start.sh` | Loads Key Vault secrets, sets htpasswd, starts services |
-| `templates/stop.sh` | Stops services, removes local secrets |
-| `templates/clone-repo.sh` | Clones GitHub repos (optionally with PAT auth) |
+| `ansible/playbook.yml` | Ansible playbook (full VM configuration) |
+| `ansible/roles/openclaw/` | Ansible role: tasks, defaults, handlers, templates |
+| `ansible/roles/openclaw/templates/` | Jinja2 templates (start.sh, nginx.conf, etc.) |
+| `ansible/ansible.cfg` | Ansible configuration |
+| `ansible/.ansible-lint` | ansible-lint configuration (production profile) |
+| `ansible/requirements.yml` | Ansible Galaxy dependencies |
 | `ai/basic-memory/README.md` | Basic Memory setup and note conventions |
 | `ai/basic-memory/notes/*.md` | Persisted project knowledge notes |
 | `ai/skills/basic-memory-state-sync/run.sh` | Generates memory update template from git changes |
@@ -244,7 +252,7 @@ nano ~/openclaw/config/openclaw.json
 # change "model": "claude-opus-4-6"  or  "gpt-4o"
 ```
 
-### OpenClaw Agent Configuration (`templates/openclaw.json`)
+### OpenClaw Agent Configuration (`ansible/roles/openclaw/templates/openclaw.json.j2`)
 
 The agent configuration is deployed to `~/.openclaw/openclaw.json` inside the
 Docker container. It controls the agent's behavior, model, and tool permissions.

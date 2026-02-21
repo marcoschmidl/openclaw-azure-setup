@@ -33,7 +33,7 @@ warn() { echo -e "${YELLOW}[deploy] WARN: $1${NC}"; }
 err()  { echo -e "${RED}[deploy] ERROR: $1${NC}"; exit 1; }
 step() { echo -e "${CYAN}[deploy] [$1/$TOTAL_STEPS] $2${NC}"; }
 
-TOTAL_STEPS=5
+TOTAL_STEPS=6
 
 echo ""
 echo "=========================================="
@@ -94,16 +94,39 @@ terraform init -input=false
 log "  Terraform initialized"
 echo ""
 
-# -- Step 4: Terraform apply --
-step 4 "Applying Terraform configuration..."
-log "  This will create all Azure resources. Please wait..."
+# -- Step 3b: Warn about .env permissions --
+if [ -f ".env" ]; then
+    ENV_PERMS=$(stat -f '%A' .env 2>/dev/null || stat -c '%a' .env 2>/dev/null || echo "")
+    if [ -n "$ENV_PERMS" ] && [ "$ENV_PERMS" != "600" ] && [ "$ENV_PERMS" != "400" ]; then
+        warn ".env has permissions $ENV_PERMS (should be 600). Run: chmod 600 .env"
+    fi
+fi
+
+# -- Step 4: Terraform plan + apply --
+step 4 "Planning infrastructure changes..."
 echo ""
-terraform apply -auto-approve
+terraform plan -out=tfplan -input=false
+echo ""
+
+log "  Plan complete. Review the changes above."
+echo ""
+read -rp "  Apply these changes? (yes/no): " APPLY_CONFIRM
+echo ""
+
+if [[ "$APPLY_CONFIRM" != "yes" ]]; then
+    warn "Aborted. No resources were created or changed."
+    rm -f tfplan
+    exit 0
+fi
+
+log "  Applying Terraform plan..."
+terraform apply tfplan
+rm -f tfplan
 log "  Terraform apply completed"
 echo ""
 
 # -- Step 5: Display results --
-step 5 "Collecting deployment outputs..."
+step 6 "Collecting deployment outputs..."
 
 FQDN=$(terraform output -raw fqdn 2>/dev/null || echo "n/a")
 ADMIN_USER=$(terraform output -raw admin_username 2>/dev/null || echo "n/a")
@@ -131,8 +154,10 @@ echo "  https://$FQDN"
 echo "  Login: $ADMIN_USER / <password>"
 echo "  (Self-signed certificate — browser warning is expected)"
 echo ""
-echo "  ---- Start OpenClaw (on VM) ----"
-echo "  cd ~/openclaw && ./start.sh"
+echo "  ---- Next Steps ----"
+echo "  make wait-for-cloud-init     # Wait for bootstrap (~2 min)"
+echo "  make configure               # Configure VM (Ansible)"
+echo "  make openclaw-start          # Start services"
 echo ""
 echo "  ---- Retrieve password from Key Vault ----"
 echo "  az keyvault secret show --vault-name $KV_NAME --name admin-password --query value -o tsv"

@@ -1,0 +1,52 @@
+# Rendered by Ansible — do not edit manually on the VM.
+# ==========================================================
+# OpenClaw Docker Compose Configuration
+# ==========================================================
+# Runs the Nginx reverse proxy container for SSL termination
+# and Basic Auth. OpenClaw itself runs as a host process
+# (systemd service) and is accessed via host.docker.internal.
+# ==========================================================
+
+services:
+  # -- Nginx Reverse Proxy --
+  nginx:
+    image: {{ openclaw_nginx_image }}
+    container_name: openclaw-nginx
+    restart: unless-stopped
+    ports:
+      - "443:443"   # HTTPS (self-signed cert)
+      - "80:80"     # HTTP (redirects to HTTPS)
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+      - ./nginx/logs:/var/log/nginx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=10m
+      - /var/cache/nginx:noexec,nosuid,size=10m
+      - /var/run:noexec,nosuid,size=1m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - DAC_READ_SEARCH
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate --server-response -qO /dev/null https://localhost/ 2>&1 | grep -q 'HTTP/' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"

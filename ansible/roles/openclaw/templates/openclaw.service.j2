@@ -1,0 +1,63 @@
+# Rendered by Ansible — do not edit manually on the VM.
+[Unit]
+Description=OpenClaw AI Gateway
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User={{ openclaw_user }}
+Group={{ openclaw_user }}
+WorkingDirectory={{ openclaw_dir }}
+
+# Environment variables
+Environment="PNPM_HOME={{ openclaw_home }}/.local/share/pnpm"
+Environment="PATH={{ openclaw_home }}/.local/bin:{{ openclaw_home }}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME={{ openclaw_home }}"
+Environment="OPENCLAW_CONFIG_PATH={{ openclaw_dir }}/config/openclaw.json"
+{% if openclaw_uid_value is defined %}
+Environment="XDG_RUNTIME_DIR=/run/user/{{ openclaw_uid_value }}"
+Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ openclaw_uid_value }}/bus"
+{% endif %}
+
+# Secrets loaded from .env (written by start.sh from Key Vault)
+# The dash prefix means no error if the file does not exist
+EnvironmentFile=-{{ openclaw_dir }}/.env
+
+# Pre-check: config file must exist
+ExecStartPre=/usr/bin/test -f {{ openclaw_dir }}/config/openclaw.json
+
+# Start command
+ExecStart={{ openclaw_home }}/.local/bin/openclaw gateway --bind lan --port {{ openclaw_port }}
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ openclaw_dir }}
+ReadWritePaths={{ openclaw_home }}/.openclaw
+ReadWritePaths={{ openclaw_home }}/.local
+
+# Resource limits — prevent runaway processes from exhausting VM resources
+# Standard_B2s has 4 GB RAM and 2 vCPUs
+MemoryMax=3G
+MemoryHigh=2G
+CPUQuota=150%
+TasksMax=256
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw
+
+[Install]
+WantedBy=multi-user.target

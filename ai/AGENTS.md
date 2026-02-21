@@ -2,13 +2,18 @@
 
 Guidance for agentic coding tools operating in this repository.
 
+Canonical docs: see top-level `AGENTS.md` for the full version.
+This file is kept as a pointer for tools that scan `ai/`.
+
 ## 1) Project intent and architecture
 
-- This repo deploys OpenClaw on Azure using Terraform.
+- This repo deploys OpenClaw on Azure using Terraform + Ansible.
+- **Three-layer architecture:** Terraform (infrastructure) -> Cloud-Init (minimal bootstrap) -> Ansible (full VM configuration).
 - OpenClaw runs as a **systemd host process** on an Ubuntu VM.
 - Nginx runs as a Docker container and provides SSL + Basic Auth reverse proxying.
 - Azure Key Vault stores secrets (`github-pat`, `anthropic-key`, admin credentials).
-- `cloud-init.yml` writes templates and provisions the VM at first boot.
+- `cloud-init.yml` is a minimal bootstrap (installs Python3, pip, ACL for Ansible).
+- `ansible/` contains the full VM configuration (Docker, Node.js, Nginx, OpenClaw, firewall, security hardening).
 
 ## 2) Cursor/Copilot repository rules
 
@@ -19,10 +24,11 @@ Guidance for agentic coding tools operating in this repository.
 
 ## 3) Setup and prerequisites
 
-- Required tools: `terraform` (>= 1.5), `az`, `bash`, `ssh`.
+- Required tools: `terraform` (>= 1.5), `az`, `bash`, `ssh`, `ansible`, `ansible-lint`.
 - Optional local secrets file: `.env` (from `.env.example`).
 - Authenticate Azure CLI before infra operations: `az login`.
 - Terraform providers are pinned in `main.tf` and `.terraform.lock.hcl`.
+- Ansible Galaxy dependencies: `ansible-galaxy install -r ansible/requirements.yml`.
 
 ## 4) Build, lint, validate, test commands
 
@@ -34,6 +40,9 @@ make fmt
 make validate
 make plan
 make deploy
+make wait-for-cloud-init
+make configure
+make openclaw-start
 ```
 
 ### Lint/validation commands
@@ -41,7 +50,9 @@ make deploy
 ```bash
 make fmt
 make validate
-bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
+make ansible-lint
+bash -n deploy.sh destroy.sh
+ansible-playbook --syntax-check -i localhost, ansible/playbook.yml
 ```
 
 ### "Single test" / targeted checks (important for agents)
@@ -49,22 +60,22 @@ bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clon
 Use these when you only changed one area:
 
 ```bash
-# Single shell script syntax check
-bash -n templates/start.sh
-
-# Check multiple specific scripts only
-bash -n deploy.sh templates/clone-repo.sh
-
 # Format-check a single Terraform file via standard formatter
 terraform fmt -check main.tf
 
 # Validate full Terraform graph after any TF change
 terraform validate
+
+# Lint Ansible playbook and roles
+ansible-lint ansible/playbook.yml
+
+# Syntax check shell scripts
+bash -n deploy.sh destroy.sh
 ```
 
 Notes:
 - There is no dedicated unit test framework in this repo today.
-- Treat `bash -n` and `terraform validate` as the effective test gates.
+- Treat `bash -n`, `terraform validate`, and `ansible-lint` as the effective test gates.
 
 ## 5) Deployment and safety conventions
 
@@ -86,7 +97,7 @@ Notes:
 - Keep comments concise and focused on non-obvious intent.
 - Avoid introducing unnecessary abstraction or over-modularization.
 
-### Shell (`*.sh` and `templates/*.sh`)
+### Shell (`*.sh`)
 
 - Shebang + strict mode required: `#!/bin/bash` and `set -euo pipefail`.
 - Quote variable expansions unless intentional word-splitting is required.
@@ -97,11 +108,18 @@ Notes:
 - Use readable step-based flow in long operational scripts.
 - Keep scripts idempotent where practical (safe to re-run).
 
-### YAML/templates (`cloud-init.yml`, `templates/*`)
+### Ansible (`ansible/`)
 
-- Preserve indentation strictly; cloud-init is whitespace-sensitive.
-- Keep template variable names explicit and aligned with `main.tf` injection keys.
-- When embedding shell in Terraform templates, handle `$` escaping correctly.
+- Role variables must use `openclaw_` prefix (enforced by ansible-lint).
+- Use FQCN for all modules (e.g. `ansible.builtin.apt`, not `apt`).
+- All shell tasks must set `executable: /bin/bash` and use `set -o pipefail` for pipes.
+- Include `changed_when` on all command/shell tasks.
+- Templates use Jinja2 `.j2` format in `ansible/roles/openclaw/templates/`.
+- Run `ansible-lint` before committing Ansible changes.
+
+### YAML/templates (`cloud-init.yml`, `ansible/**/*.yml`)
+
+- Preserve indentation strictly; cloud-init and Ansible are whitespace-sensitive.
 - Prefer comments that explain provisioning intent, not obvious syntax.
 
 ### Makefile
@@ -117,9 +135,11 @@ Notes:
 - Naming:
   - Files: lowercase, hyphen-separated (`clone-repo.sh`, `cloud-init.yml`).
   - Terraform resources/data: descriptive names (`main`, `my_ip`, `admin_password`).
+  - Ansible role variables: `openclaw_` prefix required.
   - Env vars: uppercase snake case.
 - Formatting:
   - HCL via `terraform fmt`.
+  - Ansible YAML via `ansible-lint` (production profile).
   - Shell formatting should stay consistent with existing indentation style.
   - Repository line endings are LF (`.gitattributes`).
 
@@ -129,6 +149,7 @@ Notes:
 - Use clear actionable error messages (what failed + how to fix).
 - In Terraform, favor validation/postcondition-style guardrails when adding risky inputs.
 - In scripts, separate hard failures (`err`) from recoverable paths (`warn`).
+- In Ansible, use `ansible.builtin.assert` for pre-condition validation.
 
 ## 9) Security and secret handling
 
@@ -137,6 +158,7 @@ Notes:
 - Key Vault is source of truth for runtime secrets on VM.
 - `start.sh` may materialize temporary local secret files; `stop.sh` cleans them.
 - Preserve restrictive file permissions for secret-bearing files (`chmod 600`).
+- Dedicated `openclaw` service user with scoped sudoers (not root, not admin).
 
 ## 10) Change checklist for agents
 
@@ -145,13 +167,13 @@ Before finishing a change:
 ```bash
 make fmt
 make validate
-bash -n deploy.sh destroy.sh templates/start.sh templates/stop.sh templates/clone-repo.sh
-make plan
+bash -n deploy.sh destroy.sh
+ansible-lint ansible/playbook.yml
 ```
 
 For small edits, run the smallest relevant targeted checks first, then full validation if Terraform changed.
 
-## 11) Cross-provider skills (OpenCode + Claude)
+## 11) Cross-provider skills (Claude Code + Claude)
 
 - Source of truth for reusable workflows: `ai/skills/`.
 - Skill files must be provider-neutral Markdown plus optional executable scripts.

@@ -1,0 +1,47 @@
+---
+# CI testing mode — skips systemd, Docker, firewall tasks
+openclaw_ci_test: false
+
+# VM admin user (SSH login, Terraform-managed)
+openclaw_admin_username: "clawadmin"
+
+# Dedicated service user (runs OpenClaw, scoped sudo)
+openclaw_user: "openclaw"
+openclaw_home: "/home/{{ openclaw_user }}"
+openclaw_dir: "{{ openclaw_home }}/openclaw"
+openclaw_config_dir: "{{ openclaw_home }}/.openclaw"
+
+# OpenClaw
+openclaw_port: 18789
+openclaw_model: "anthropic/claude-sonnet-4-5"
+openclaw_install_mode: "release"  # 'release' or 'development'
+
+# Node.js
+openclaw_nodejs_version: "22.x"
+
+# Nginx
+openclaw_nginx_image: "nginx:alpine"
+openclaw_nginx_ssl_days: 365
+
+# Docker
+openclaw_docker_log_max_size: "10m"
+openclaw_docker_log_max_file: "3"
+
+# Security
+openclaw_fail2ban_bantime: 3600
+openclaw_fail2ban_findtime: 600
+openclaw_fail2ban_maxretry: 5
+
+# Feature flags
+openclaw_install_azure_cli: true
+openclaw_install_fail2ban: true
+openclaw_install_unattended_upgrades: true
+
+# Tailscale (optional, for future use)
+openclaw_tailscale_enabled: false
+
+# SSH keys for openclaw user (add your public keys here)
+# Example:
+#   openclaw_ssh_keys:
+#     - "ssh-ed25519 AAAAC3... user@host"
+openclaw_ssh_keys: []

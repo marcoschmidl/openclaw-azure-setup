@@ -3,11 +3,18 @@
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
+crash.log
+crash.*.log
 
 # Secrets
 .env
 secrets.tfvars
 *.auto.tfvars
+
+# Ansible
+ansible/inventory.yml
+ansible/*.retry
 
 # OS
 .DS_Store

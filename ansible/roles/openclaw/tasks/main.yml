@@ -1,0 +1,47 @@
+---
+# Task orchestration for OpenClaw Azure VM configuration.
+#
+# IMPORTANT: Task order matters!
+# Docker must be installed BEFORE firewall because firewall.yml
+# writes /etc/docker/daemon.json and restarts Docker.
+
+- name: Create dedicated openclaw user
+  ansible.builtin.include_tasks: user.yml
+  tags: [user]
+
+- name: Install Docker
+  ansible.builtin.include_tasks: docker.yml
+  when: not (openclaw_ci_test | default(false))
+  tags: [docker]
+
+- name: Configure firewall (UFW + DOCKER-USER + fail2ban)
+  ansible.builtin.include_tasks: firewall.yml
+  when: not (openclaw_ci_test | default(false))
+  tags: [firewall, security]
+
+- name: Install Azure CLI
+  ansible.builtin.include_tasks: azure-cli.yml
+  when: openclaw_install_azure_cli
+  tags: [azure]
+
+- name: Install Node.js and pnpm
+  ansible.builtin.include_tasks: nodejs.yml
+  tags: [nodejs]
+
+- name: Install and configure OpenClaw
+  ansible.builtin.include_tasks: openclaw.yml
+  tags: [openclaw]
+
+- name: Configure SSL certificates
+  ansible.builtin.include_tasks: ssl.yml
+  when: not (openclaw_ci_test | default(false))
+  tags: [nginx, ssl]
+
+- name: Configure Nginx reverse proxy
+  ansible.builtin.include_tasks: nginx.yml
+  tags: [nginx]
+
+- name: Configure systemd service
+  ansible.builtin.include_tasks: systemd.yml
+  when: not (openclaw_ci_test | default(false))
+  tags: [systemd]

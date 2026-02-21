@@ -15,7 +15,7 @@ KEY_PATTERNS=(
   "deploy.sh"
   "PLAN.md"
   "TODO-security-hardening.md"
-  "templates/"
+  "ansible/"
   "ai/"
 )
 

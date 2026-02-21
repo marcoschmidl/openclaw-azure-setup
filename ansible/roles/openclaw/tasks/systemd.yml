@@ -1,0 +1,19 @@
+---
+# Deploy and enable the OpenClaw systemd service unit.
+# The service runs as the dedicated openclaw user with
+# strict security hardening (NoNewPrivileges, ProtectSystem, etc).
+
+- name: Deploy OpenClaw systemd service
+  ansible.builtin.template:
+    src: openclaw.service.j2
+    dest: /etc/systemd/system/openclaw.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart openclaw
+
+- name: Enable OpenClaw service
+  ansible.builtin.systemd:
+    name: openclaw
+    enabled: true
+    daemon_reload: true

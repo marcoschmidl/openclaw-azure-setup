@@ -1,0 +1,216 @@
+---
+# Firewall configuration: UFW (default-deny) + DOCKER-USER iptables chain
+# + fail2ban + unattended-upgrades + system tools.
+#
+# The DOCKER-USER chain is critical: Docker manipulates iptables directly,
+# bypassing UFW. The DOCKER-USER chain is evaluated BEFORE Docker's FORWARD
+# chain, restoring firewall control over container traffic.
+
+# ── fail2ban ───────────────────────────────────────────────
+
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name: fail2ban
+    state: present
+    update_cache: true
+  when: openclaw_install_fail2ban
+
+- name: Configure fail2ban for SSH protection
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # OpenClaw security hardening - SSH protection
+      [DEFAULT]
+      bantime = {{ openclaw_fail2ban_bantime }}
+      findtime = {{ openclaw_fail2ban_findtime }}
+      maxretry = {{ openclaw_fail2ban_maxretry }}
+      backend = systemd
+
+      [sshd]
+      enabled = true
+      port = ssh
+      filter = sshd
+      # logpath not needed - systemd backend reads from journal
+
+      [nginx-http-auth]
+      enabled = true
+      port = http,https
+      filter = nginx-http-auth
+      logpath = {{ openclaw_dir }}/nginx/logs/error.log
+      backend = auto
+  when: openclaw_install_fail2ban
+  notify: Restart fail2ban
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: started
+    enabled: true
+  when: openclaw_install_fail2ban
+
+# ── unattended-upgrades ──────────────────────────────────────
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - apt-listchanges
+    state: present
+  when: openclaw_install_unattended_upgrades
+
+- name: Configure automatic security updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+  when: openclaw_install_unattended_upgrades
+
+- name: Configure unattended-upgrades security-only policy
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "${distro_id}:${distro_codename}-security";
+          "${distro_id}ESMApps:${distro_codename}-apps-security";
+          "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+      Unattended-Upgrade::MinimalSteps "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+  when: openclaw_install_unattended_upgrades
+
+# ── UFW Firewall ───────────────────────────────────────────
+
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+
+- name: Set UFW default policies
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: 'incoming', policy: 'deny' }
+    - { direction: 'outgoing', policy: 'allow' }
+    - { direction: 'routed', policy: 'deny' }
+
+- name: Allow SSH on port 22
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    comment: 'SSH'
+
+- name: Allow HTTPS on port 443
+  community.general.ufw:
+    rule: allow
+    port: '443'
+    proto: tcp
+    comment: 'HTTPS - Nginx reverse proxy'
+
+- name: Allow HTTP on port 80 (redirect to HTTPS)
+  community.general.ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+    comment: 'HTTP - redirect to HTTPS'
+
+# ── DOCKER-USER iptables chain ─────────────────────────────
+# Docker bypasses UFW by manipulating iptables directly.
+# The DOCKER-USER chain is evaluated BEFORE Docker's FORWARD chain.
+
+- name: Get default network interface
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      ip route | grep default | awk '{print $5}' | head -n1
+    executable: /bin/bash
+  register: openclaw_default_interface
+  changed_when: false
+
+- name: Validate default network interface was detected
+  ansible.builtin.assert:
+    that:
+      - openclaw_default_interface.stdout is defined
+      - openclaw_default_interface.stdout | length > 0
+    fail_msg: "Failed to detect default network interface. Cannot configure firewall rules safely."
+    success_msg: "Default network interface detected: {{ openclaw_default_interface.stdout }}"
+
+- name: Create UFW after.rules for Docker isolation
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/after.rules
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - Docker isolation"
+    insertbefore: "^COMMIT$"
+    block: |
+      # Docker port isolation — block all forwarded traffic by default.
+      # Docker bypasses UFW by manipulating iptables directly.
+      # The DOCKER-USER chain is evaluated BEFORE Docker's FORWARD chain.
+      :DOCKER-USER - [0:0]
+
+      # Allow established connections
+      -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+      # Allow localhost
+      -A DOCKER-USER -i lo -j ACCEPT
+
+      # Block all other forwarded traffic from external interface
+      -A DOCKER-USER -i {{ openclaw_default_interface.stdout }} -j DROP
+    create: false
+
+# ── Docker daemon config (must be after Docker install) ────
+
+- name: Configure Docker daemon (UFW-compatible, hardened)
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+# ── Enable firewall ────────────────────────────────────────
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Reload UFW
+  community.general.ufw:
+    state: reloaded
+
+# ── System tools ───────────────────────────────────────────
+
+- name: Install debugging and system tools
+  ansible.builtin.apt:
+    name:
+      - htop
+      - tmux
+      - tree
+      - net-tools
+      - lsof
+      - vim
+      - wget
+      - curl
+      - jq
+      - dnsutils
+      - unzip
+      - rsync
+      - build-essential
+      - git
+      - git-lfs
+      - apache2-utils
+    state: present

@@ -1,217 +1,31 @@
 #cloud-config
 # ==========================================================
-# OpenClaw VM Provisioning (cloud-init)
+# OpenClaw VM — Minimal Bootstrap (cloud-init)
 # ==========================================================
-# This template is rendered by Terraform's templatefile().
-# It installs Docker (for Nginx), Node.js + pnpm, and OpenClaw
-# as a host process managed by systemd. Nginx runs in Docker
-# as reverse proxy (SSL termination + Basic Auth).
+# This is a minimal cloud-init configuration that installs
+# only the prerequisites needed for Ansible to connect.
 #
-# Template variables (set by Terraform):
-#   admin_username       - SSH/admin username
-#   keyvault_name        - Azure Key Vault name
-#   fqdn                 - Azure FQDN (DNS label)
-#   file_docker_compose  - docker-compose.yml content
-#   file_openclaw_json   - openclaw.json content
-#   file_nginx_conf      - nginx.conf content (pre-rendered)
-#   file_start_sh        - start.sh content (pre-rendered)
-#   file_stop_sh         - stop.sh content
-#   file_clone_repo_sh   - clone-repo.sh content (pre-rendered)
-#   file_openclaw_service - systemd unit file content (pre-rendered)
-#   file_daemon_json     - Docker daemon.json content (log rotation)
+# All real configuration (Docker, Node.js, Nginx, OpenClaw,
+# firewall, security hardening) is handled by Ansible via:
+#   make configure
+#
+# This file is NOT a Terraform template — no variables, no
+# templatefile(), no $$-escaping needed.
 # ==========================================================
 
 # Update package index and upgrade installed packages
 package_update: true
 package_upgrade: true
 
-# Install required system packages
+# Install only Ansible prerequisites and basic tools
 packages:
+  - python3
+  - python3-pip
   - ca-certificates
   - curl
   - gnupg
   - jq
-  - apache2-utils
-  - git
-  # Security hardening
-  - fail2ban
-  - unattended-upgrades
-  - apt-listchanges
-  # Debugging tools
-  - htop
-  - tmux
-  - tree
-  - net-tools
-  - lsof
-  - vim
-  - wget
-  - build-essential
-  - git-lfs
+  - acl
 
-# Write all configuration files to a staging directory first.
-# Files are written to /opt/openclaw (owned by root) because the admin
-# user's home directory may not exist yet during the write_files phase.
-# runcmd will move everything to ~/openclaw/ and fix ownership.
-write_files:
-  - path: /opt/openclaw/docker-compose.yml
-    permissions: "0644"
-    content: |
-      ${indent(6, file_docker_compose)}
-
-  - path: /opt/openclaw/config/openclaw.json
-    permissions: "0644"
-    content: |
-      ${indent(6, file_openclaw_json)}
-
-  - path: /opt/openclaw/nginx/default.conf
-    permissions: "0644"
-    content: |
-      ${indent(6, file_nginx_conf)}
-
-  - path: /opt/openclaw/start.sh
-    permissions: "0755"
-    content: |
-      ${indent(6, file_start_sh)}
-
-  - path: /opt/openclaw/stop.sh
-    permissions: "0755"
-    content: |
-      ${indent(6, file_stop_sh)}
-
-  - path: /opt/openclaw/clone-repo.sh
-    permissions: "0755"
-    content: |
-      ${indent(6, file_clone_repo_sh)}
-
-  # Docker daemon config — log rotation and security settings
-  # Must be written BEFORE Docker is installed
-  - path: /etc/docker/daemon.json
-    permissions: "0644"
-    content: |
-      ${indent(6, file_daemon_json)}
-
-  # fail2ban SSH brute-force protection
-  - path: /etc/fail2ban/jail.local
-    permissions: "0644"
-    content: |
-      [DEFAULT]
-      bantime = 3600
-      findtime = 600
-      maxretry = 5
-      backend = systemd
-
-      [sshd]
-      enabled = true
-      port = ssh
-      filter = sshd
-
-  # Automatic security updates — periodic config
-  - path: /etc/apt/apt.conf.d/20auto-upgrades
-    permissions: "0644"
-    content: |
-      APT::Periodic::Update-Package-Lists "1";
-      APT::Periodic::Unattended-Upgrade "1";
-      APT::Periodic::AutocleanInterval "7";
-
-  # Automatic security updates — upgrade policy
-  - path: /etc/apt/apt.conf.d/50unattended-upgrades
-    permissions: "0644"
-    content: |
-      Unattended-Upgrade::Allowed-Origins {
-        "$${distro_id}:$${distro_codename}-security";
-        "$${distro_id}ESMApps:$${distro_codename}-apps-security";
-        "$${distro_id}ESM:$${distro_codename}-infra-security";
-      };
-      Unattended-Upgrade::Automatic-Reboot "false";
-      Unattended-Upgrade::Remove-Unused-Dependencies "true";
-
-  # systemd unit file — written directly to /etc/systemd/system/
-  - path: /etc/systemd/system/openclaw.service
-    permissions: "0644"
-    content: |
-      ${indent(6, file_openclaw_service)}
-
-# Commands to run after packages are installed and files are written.
-# At this point the admin user is guaranteed to exist.
-runcmd:
-  # Install Docker Engine via convenience script
-  - curl -fsSL https://get.docker.com | sh
-  - usermod -aG docker ${admin_username}
-
-  # Ensure Docker Compose plugin is available
-  - apt-get install -y -qq docker-compose-plugin
-
-  # Install Azure CLI (needed for Key Vault access from VM)
-  - curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-
-  # Install Node.js 22.x via NodeSource
-  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  - apt-get install -y -qq nodejs
-
-  # Install pnpm globally
-  - npm install -g pnpm
-
-  # Configure pnpm directories for the admin user
-  - |
-    su - ${admin_username} -c '
-      mkdir -p ~/.local/share/pnpm ~/.local/bin
-      pnpm config set global-dir ~/.local/share/pnpm
-      pnpm config set global-bin-dir ~/.local/bin
-    '
-
-  # Install OpenClaw globally as the admin user
-  - |
-    su - ${admin_username} -c '
-      export PNPM_HOME="$HOME/.local/share/pnpm"
-      export PATH="$HOME/.local/bin:$PNPM_HOME:$PATH"
-      pnpm install -g openclaw@latest
-    '
-
-  # Move staged files from /opt/openclaw to the user's home directory
-  - mv /opt/openclaw /home/${admin_username}/openclaw
-
-  # Create runtime directories (workspace for repos, ssl for certs)
-  - mkdir -p /home/${admin_username}/openclaw/workspace /home/${admin_username}/openclaw/nginx/ssl
-
-  # Generate a self-signed SSL certificate for the Azure FQDN
-  - |
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-      -keyout /home/${admin_username}/openclaw/nginx/ssl/openclaw.key \
-      -out /home/${admin_username}/openclaw/nginx/ssl/openclaw.crt \
-      -subj "/CN=${fqdn}/O=OpenClaw/C=DE" \
-      -addext "subjectAltName=DNS:${fqdn}"
-
-  # Create empty htpasswd file (will be populated by start.sh at runtime)
-  - touch /home/${admin_username}/openclaw/nginx/.htpasswd
-
-  # Fix ownership for the entire openclaw directory and the home dir itself
-  - chown -R ${admin_username}:${admin_username} /home/${admin_username}/openclaw
-  - chown ${admin_username}:${admin_username} /home/${admin_username}
-
-  # Enable the OpenClaw systemd service (will be started by start.sh)
-  - systemctl daemon-reload
-  - systemctl enable openclaw
-
-  # Enable and start fail2ban for SSH brute-force protection
-  - systemctl enable fail2ban
-  - systemctl start fail2ban
-
-  # Configure .bash_profile and .bashrc for the admin user (pnpm PATH)
-  - |
-    cat > /home/${admin_username}/.bash_profile << 'PROFILE'
-    # Source .bashrc for login shells
-    if [ -f ~/.bashrc ]; then
-        . ~/.bashrc
-    fi
-    PROFILE
-    chown ${admin_username}:${admin_username} /home/${admin_username}/.bash_profile
-  - |
-    cat >> /home/${admin_username}/.bashrc << 'BASHRC'
-
-    # pnpm configuration
-    export PNPM_HOME="$HOME/.local/share/pnpm"
-    export PATH="$HOME/.local/bin:$PNPM_HOME:$PATH"
-    BASHRC
-
-  # Pre-pull Nginx image to speed up first start
-  - docker pull nginx:alpine
+# Signal completion so we know when cloud-init has finished
+final_message: "Cloud-init completed in $UPTIME seconds"

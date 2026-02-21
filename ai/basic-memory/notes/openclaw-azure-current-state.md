@@ -6,31 +6,30 @@ tags:
 - azure
 - current-state
 - infrastructure
+- ansible
 ---
 
 # OpenClaw Azure Setup - Current State
 
 ## Observations
 
-- [scope] Repo deployt OpenClaw auf Azure per Terraform als Single-Root-Modul (`main.tf`).
-- [runtime] OpenClaw laeuft als systemd Host-Prozess auf Ubuntu VM, Nginx laeuft als Docker-Container.
-- [security] Secrets liegen in Azure Key Vault (`github-pat`, `anthropic-key`, `admin-username`, `admin-password`).
-- [network] Zugriff ist auf SSH + HTTPS begrenzt und laut Doku auf aktuelle Client-IP eingeschraenkt.
-- [provisioning] Erstkonfiguration laeuft ueber `cloud-init.yml` plus `templates/*`.
-- [workflow] Standardfluss fuer IaC ist `make init`, `make fmt`, `make validate`, `make plan`, `make deploy`.
-- [testing] Es gibt keine Unit-Tests; effektive Gates sind `terraform validate` und `bash -n` fuer Shell-Skripte.
-- [operations] Makefile deckt Deploy, VM-Lifecycle, OpenClaw Start/Stop und Logs/Debugging ab.
-- [hardening] Security-Hardening-Backlog ist zu grossen Teilen als DONE markiert in `TODO-security-hardening.md`.
-- [roadmap] `PLAN.md` listet weitere Verbesserungen mit Prioritaeten (Dokukorrektur, Nginx Rate Limits, Healthchecks, Terraform Validations).
-- [ai-meta] Repo hat agentische Leitplanken in `AGENTS.md` und provider-neutrale Skill-Konventionen unter `ai/skills/`.
+- [architecture] Three-layer architecture: Terraform (infrastructure) -> Cloud-Init (minimal bootstrap) -> Ansible (full VM configuration).
+- [scope] Repo deploys OpenClaw on Azure via Terraform as a single-root module (`main.tf`).
+- [runtime] OpenClaw runs as a systemd host process on an Ubuntu VM; Nginx runs as a Docker container.
+- [security] Secrets are stored in Azure Key Vault (`github-pat`, `anthropic-key`, `admin-username`, `admin-password`).
+- [network] Access is restricted to SSH + HTTPS from the current client IP via NSG rules, with an explicit deny-all rule.
+- [provisioning] Cloud-init is minimal (31 lines): installs Python3, pip, ACL for Ansible. All real configuration is in `ansible/`.
+- [ansible] Full VM configuration is handled by Ansible role `openclaw` with 10 task files, 8 Jinja2 templates, and production-rated linting (5/5).
+- [workflow] Standard IaC flow: `make init` -> `make fmt` -> `make validate` -> `make plan` -> `make deploy` -> `make wait-for-cloud-init` -> `make configure` -> `make openclaw-start`.
+- [testing] No unit test framework; effective gates are `terraform validate`, `bash -n`, and `ansible-lint`.
+- [operations] Makefile covers deploy, VM lifecycle, Ansible configuration, OpenClaw start/stop, and logs/debugging.
+- [hardening] 9-layer security model: Azure NSG, UFW, DOCKER-USER iptables, fail2ban (SSH + Nginx), systemd hardening, dedicated user + scoped sudo, auto security updates, Docker hardening, container hardening.
+- [ai-meta] Repo has agentic guardrails in `AGENTS.md` and provider-neutral skill conventions under `ai/skills/`.
 
 ## Relations
 
 - documented_in [[README]]
 - documented_in [[AGENTS]]
-- documented_in [[PLAN]]
-- documented_in [[TODO Security Hardening]]
-- relates_to [[Basic Memory in diesem Repo]]
 - relates_to [[Security State]]
 - relates_to [[Deploy Workflow]]
 - relates_to [[Ops Runbook]]

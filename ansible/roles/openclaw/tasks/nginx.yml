@@ -1,0 +1,21 @@
+---
+# Deploy Nginx reverse proxy configuration files.
+
+- name: Deploy Nginx configuration
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ openclaw_dir }}/nginx/default.conf"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Create empty htpasswd file (populated by start.sh at runtime)
+  ansible.builtin.file:
+    path: "{{ openclaw_dir }}/nginx/.htpasswd"
+    state: touch
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve

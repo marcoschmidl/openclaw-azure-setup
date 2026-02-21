@@ -1,0 +1,34 @@
+---
+# Generate a self-signed SSL certificate for the Azure FQDN.
+# Only generates if the certificate does not already exist.
+
+- name: Check if SSL certificate exists
+  ansible.builtin.stat:
+    path: "{{ openclaw_dir }}/nginx/ssl/openclaw.crt"
+  register: openclaw_ssl_cert
+
+- name: Generate self-signed SSL certificate (ECDSA P-256)
+  ansible.builtin.command: >
+    openssl req -x509 -nodes -days {{ openclaw_nginx_ssl_days }}
+    -newkey ec -pkeyopt ec_paramgen_curve:P-256
+    -keyout {{ openclaw_dir }}/nginx/ssl/openclaw.key
+    -out {{ openclaw_dir }}/nginx/ssl/openclaw.crt
+    -subj "/CN={{ fqdn }}/O=OpenClaw/C=DE"
+    -addext "subjectAltName=DNS:{{ fqdn }}"
+  when: not openclaw_ssl_cert.stat.exists
+  changed_when: true
+  notify: Restart nginx
+
+- name: Set SSL key file permissions
+  ansible.builtin.file:
+    path: "{{ openclaw_dir }}/nginx/ssl/openclaw.key"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0600"
+
+- name: Set SSL cert file permissions
+  ansible.builtin.file:
+    path: "{{ openclaw_dir }}/nginx/ssl/openclaw.crt"
+    owner: "{{ openclaw_user }}"
+    group: "{{ openclaw_user }}"
+    mode: "0644"

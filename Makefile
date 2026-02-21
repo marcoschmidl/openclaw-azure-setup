@@ -4,14 +4,15 @@
 # Provides convenient targets for deploying, managing, and
 # debugging the OpenClaw Azure VM setup.
 #
+# Architecture: Terraform (infra) -> Cloud-Init (bootstrap) -> Ansible (config)
+#
 # Usage:
-#   cp .env.example .env   # Enter secrets (optional)
-#   make deploy             # Deploy infrastructure
-#   make status             # Check VM status
-#   make ssh                # SSH into VM
-#   make logs               # View container logs
-#   make destroy            # Delete everything
-#   make help               # Show all targets
+#   cp .env.example .env        # Enter secrets (optional)
+#   make deploy                 # Deploy infrastructure (Terraform)
+#   make wait-for-cloud-init    # Wait for bootstrap
+#   make configure              # Configure VM (Ansible)
+#   make openclaw-start         # Start services on VM
+#   make help                   # Show all targets
 # ==========================================================
 
 SHELL := /bin/bash
@@ -24,7 +25,6 @@ ifneq (,$(wildcard .env))
   GITHUB_TOKEN    ?= $(shell grep '^GITHUB_TOKEN=' .env 2>/dev/null | cut -d= -f2-)
   ANTHROPIC_API_KEY ?= $(shell grep '^ANTHROPIC_API_KEY=' .env 2>/dev/null | cut -d= -f2-)
 endif
-export
 
 # -- Variables (can be overridden via environment or command line) --
 RG            ?= rg-openclaw
@@ -73,6 +73,11 @@ deploy: init ## Deploy infrastructure (terraform apply)
 	@echo "  User:      $$(terraform output -raw admin_username 2>/dev/null)"
 	@echo "  Dashboard: $$(terraform output -raw dashboard_url 2>/dev/null)"
 	@echo ""
+	@echo "  Next steps:"
+	@echo "    make wait-for-cloud-init   # Wait for bootstrap (~2 min)"
+	@echo "    make configure             # Configure VM (Ansible)"
+	@echo "    make openclaw-start        # Start services"
+	@echo ""
 	@echo "  Password:  make show-password"
 	@echo "  SSH:       make ssh"
 	@echo ""
@@ -81,7 +86,7 @@ deploy: init ## Deploy infrastructure (terraform apply)
 redeploy-vm: init ## Recreate the VM (applies new cloud-init)
 	terraform apply $(ALL_TF_VARS) -replace=azurerm_linux_virtual_machine.main -auto-approve
 	@echo ""
-	@echo "[make] VM recreated. Wait ~5 min for cloud-init, then run: make openclaw-start"
+	@echo "[make] VM recreated. Run: make wait-for-cloud-init && make configure && make openclaw-start"
 
 .PHONY: destroy
 destroy: ## Delete all Azure resources and local state
@@ -154,7 +159,7 @@ logs-nginx: ## Show Nginx container logs (last 100 lines)
 	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Fetching Nginx logs from $$FQDN..."; \
-	ssh "$$USER@$$FQDN" 'docker logs --tail 100 openclaw-nginx 2>&1'
+	ssh "$$USER@$$FQDN" 'sudo -u openclaw docker logs --tail 100 openclaw-nginx 2>&1'
 
 .PHONY: cloud-init-status
 cloud-init-status: ## Check cloud-init provisioning status on VM
@@ -175,7 +180,7 @@ docker-ps: ## Show Docker container status on VM
 	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Fetching container status from $$FQDN..."; \
-	ssh "$$USER@$$FQDN" 'docker ps -a'
+	ssh "$$USER@$$FQDN" 'sudo -u openclaw docker ps -a'
 
 .PHONY: devices-list
 devices-list: ## List pending/paired Control UI devices
@@ -183,7 +188,7 @@ devices-list: ## List pending/paired Control UI devices
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	KV=$$(terraform output -raw keyvault_name 2>/dev/null); \
 	echo "[make] Listing pending Control UI devices on $$FQDN..."; \
-	ssh "$$USER@$$FQDN" "PASS=\$$(az keyvault secret show --vault-name '$$KV' --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=~/openclaw/config/openclaw.json && ~/.local/bin/openclaw devices list --url ws://127.0.0.1:18789 --password \"\$$PASS\""
+	ssh "$$USER@$$FQDN" "sudo -u openclaw bash -c 'PASS=\$$(az keyvault secret show --vault-name \"$$KV\" --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=/home/openclaw/openclaw/config/openclaw.json && /home/openclaw/.local/bin/openclaw devices list --url ws://127.0.0.1:18789 --password \"\$$PASS\"'"
 
 .PHONY: approve-device
 approve-device: ## Approve pending Control UI device (use REQUEST_ID=<id>)
@@ -196,7 +201,7 @@ approve-device: ## Approve pending Control UI device (use REQUEST_ID=<id>)
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	KV=$$(terraform output -raw keyvault_name 2>/dev/null); \
 	echo "[make] Approving device request $(REQUEST_ID) on $$FQDN..."; \
-	ssh "$$USER@$$FQDN" "PASS=\$$(az keyvault secret show --vault-name '$$KV' --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=~/openclaw/config/openclaw.json && ~/.local/bin/openclaw devices approve $(REQUEST_ID) --url ws://127.0.0.1:18789 --password \"\$$PASS\""
+	ssh "$$USER@$$FQDN" "sudo -u openclaw bash -c 'PASS=\$$(az keyvault secret show --vault-name \"$$KV\" --name admin-password --query value -o tsv) && export OPENCLAW_CONFIG_PATH=/home/openclaw/openclaw/config/openclaw.json && /home/openclaw/.local/bin/openclaw devices approve $(REQUEST_ID) --url ws://127.0.0.1:18789 --password \"\$$PASS\"'"
 
 # ==========================================================
 # OpenClaw Start / Stop (on VM via SSH)
@@ -207,14 +212,62 @@ openclaw-start: ## Start OpenClaw + Nginx on the VM
 	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Starting OpenClaw on $$FQDN..."; \
-	ssh "$$USER@$$FQDN" 'cd ~/openclaw && ./start.sh'
+	ssh "$$USER@$$FQDN" 'sudo -u openclaw bash -c "cd /home/openclaw/openclaw && ./start.sh"'
 
 .PHONY: openclaw-stop
 openclaw-stop: ## Stop OpenClaw + Nginx on the VM
 	@FQDN=$$(terraform output -raw fqdn 2>/dev/null); \
 	USER=$$(terraform output -raw admin_username 2>/dev/null); \
 	echo "[make] Stopping OpenClaw on $$FQDN..."; \
-	ssh "$$USER@$$FQDN" 'cd ~/openclaw && ./stop.sh'
+	ssh "$$USER@$$FQDN" 'sudo -u openclaw bash -c "cd /home/openclaw/openclaw && ./stop.sh"'
+
+# ==========================================================
+# Ansible Configuration
+# ==========================================================
+
+.PHONY: configure
+configure: ansible-inventory ansible-deps ## Configure VM via Ansible playbook
+	$(call check_tool,ansible-playbook)
+	@FQDN=$$(terraform output -raw fqdn); \
+	USER=$$(terraform output -raw admin_username); \
+	KV=$$(terraform output -raw keyvault_name); \
+	echo "[make] Running Ansible playbook against $$FQDN..."; \
+	KEYVAULT_NAME=$$KV VM_FQDN=$$FQDN ADMIN_USERNAME=$$USER \
+	  ansible-playbook -i ansible/inventory.yml ansible/playbook.yml \
+	  $(if $(TAGS),--tags $(TAGS),)
+
+.PHONY: ansible-inventory
+ansible-inventory: ## Generate Ansible inventory from Terraform outputs
+	@FQDN=$$(terraform output -raw fqdn); \
+	USER=$$(terraform output -raw admin_username); \
+	printf "all:\n  hosts:\n    openclaw-vm:\n      ansible_host: %s\n      ansible_user: %s\n      ansible_ssh_private_key_file: ~/.ssh/id_rsa\n" \
+	  "$$FQDN" "$$USER" > ansible/inventory.yml; \
+	echo "[make] Inventory written to ansible/inventory.yml"
+
+.PHONY: ansible-deps
+ansible-deps: ## Install Ansible Galaxy collections
+	ansible-galaxy collection install -r ansible/requirements.yml
+
+.PHONY: ansible-lint
+ansible-lint: ## Lint Ansible playbook and roles
+	$(call check_tool,ansible-lint)
+	ansible-lint ansible/playbook.yml
+
+.PHONY: ansible-check
+ansible-check: ansible-inventory ## Dry-run Ansible playbook (no changes)
+	$(call check_tool,ansible-playbook)
+	@FQDN=$$(terraform output -raw fqdn); \
+	USER=$$(terraform output -raw admin_username); \
+	KV=$$(terraform output -raw keyvault_name); \
+	KEYVAULT_NAME=$$KV VM_FQDN=$$FQDN ADMIN_USERNAME=$$USER \
+	  ansible-playbook -i ansible/inventory.yml ansible/playbook.yml --check --diff
+
+.PHONY: wait-for-cloud-init
+wait-for-cloud-init: ## Wait for cloud-init to finish on VM
+	@FQDN=$$(terraform output -raw fqdn); \
+	USER=$$(terraform output -raw admin_username); \
+	echo "[make] Waiting for cloud-init on $$FQDN..."; \
+	ssh "$$USER@$$FQDN" 'cloud-init status --wait'
 
 # ==========================================================
 # Terraform Utilities
@@ -255,8 +308,13 @@ help: ## Show this help message
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Quickstart:"
-	@echo "  cp .env.example .env    # Enter secrets (optional)"
-	@echo "  make deploy             # Deploy infrastructure"
-	@echo "  make openclaw-start     # Start OpenClaw on VM"
-	@echo "  make ssh                # SSH into VM"
+	@echo "  cp .env.example .env         # Enter secrets (optional)"
+	@echo "  make deploy                  # Deploy infrastructure (Terraform)"
+	@echo "  make wait-for-cloud-init     # Wait for bootstrap"
+	@echo "  make configure               # Configure VM (Ansible)"
+	@echo "  make openclaw-start          # Start OpenClaw on VM"
+	@echo ""
+	@echo "Day-2 config change:"
+	@echo "  make configure               # Re-run Ansible (idempotent)"
+	@echo "  make configure TAGS=nginx    # Only update Nginx"
 	@echo ""

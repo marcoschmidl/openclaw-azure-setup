@@ -6,18 +6,21 @@ tags:
 - azure
 - operations
 - runbook
+- ansible
 ---
 
 # Ops Runbook
 
 ## Observations
 
-- [lifecycle] Tagesbetrieb folgt typischerweise `make start` -> `make openclaw-start` -> Arbeit -> `make openclaw-stop` -> `make stop`.
-- [access] Zugriff erfolgt per `make ssh` und Dashboard-URL aus Terraform-Outputs.
-- [credentials] Admin-Passwort ist ueber `make show-password` oder `make show-password-kv` abrufbar.
-- [debug] Wichtige Diagnosepunkte sind `make logs`, `make logs-nginx`, `make docker-ps`, `make cloud-init-status`, `make cloud-init-logs`.
-- [device-admin] Control-UI-Device-Freigaben laufen ueber `make devices-list` und `make approve-device REQUEST_ID=<id>`.
-- [safety] Destruktive Aktionen (`make destroy`) sind explizit als gefaehrlich markiert.
+- [lifecycle] Day-to-day flow: `make start` -> `make openclaw-start` -> work -> `make openclaw-stop` -> `make stop`.
+- [configure] After infrastructure changes or first deploy: `make wait-for-cloud-init` -> `make configure` (runs Ansible over SSH).
+- [access] SSH via `make ssh`. Dashboard URL from Terraform outputs.
+- [credentials] Admin password via `make show-password` or `make show-password-kv`.
+- [debug] Key diagnostic targets: `make logs`, `make logs-nginx`, `make docker-ps`, `make cloud-init-status`, `make cloud-init-logs`.
+- [ansible] Ansible targets: `make configure`, `make ansible-lint`, `make ansible-syntax-check`, `make ansible-diff`, `make ansible-tags TAGS=...`.
+- [device-admin] Device approvals via `make devices-list` and `make approve-device REQUEST_ID=<id>`.
+- [safety] Destructive actions (`make destroy`) are explicitly marked as dangerous. All docker/openclaw commands on VM use `sudo -u openclaw`.
 
 ## Relations
 

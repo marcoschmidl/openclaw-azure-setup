@@ -1,27 +1,25 @@
 # ==========================================================
 # OpenClaw GitHub Agent — Azure VM (Terraform)
 # ==========================================================
-# Provisions a full Azure environment for running the OpenClaw
-# GitHub agent on an Ubuntu 24.04 VM. OpenClaw runs as a native
-# host process (systemd), Nginx runs in Docker for SSL + Basic Auth.
+# Provisions Azure infrastructure for the OpenClaw GitHub agent.
+# VM configuration (Docker, Nginx, OpenClaw, firewall, etc.) is
+# handled by Ansible after Terraform creates the VM.
+#
+# Architecture: Terraform (infra) → Cloud-Init (bootstrap) → Ansible (config)
 #
 # Resources created:
 #   - Resource Group
 #   - VNet / Subnet / NSG (SSH + HTTPS locked to deployer IP)
 #   - Public IP with DNS label (<label>.<region>.cloudapp.azure.com)
 #   - Key Vault (RBAC mode) with optional secrets
-#   - Linux VM with cloud-init provisioning
+#   - Linux VM with minimal cloud-init bootstrap
 #   - Auto-shutdown schedule
 #
 # Usage:
-#   terraform init
-#   terraform apply
-#
-# With secrets (optional):
-#   terraform apply -var-file="secrets.tfvars"
-#
-# Or via interactive wrapper:
-#   ./deploy.sh
+#   make deploy              # Terraform + cloud-init
+#   make wait-for-cloud-init # Wait for bootstrap
+#   make configure           # Ansible playbook
+#   make openclaw-start      # Start services
 # ==========================================================
 
 terraform {
@@ -59,6 +57,10 @@ provider "azurerm" {
 variable "location" {
   default     = "westeurope"
   description = "Azure region for all resources"
+  validation {
+    condition     = can(regex("^[a-z]+[a-z0-9]*$", var.location))
+    error_message = "Location must be a valid Azure region name (lowercase, no spaces)."
+  }
 }
 
 variable "resource_group_name" {
@@ -74,6 +76,10 @@ variable "vm_name" {
 variable "vm_size" {
   default     = "Standard_B2s"
   description = "VM size (2 vCPU, 4 GB RAM)"
+  validation {
+    condition     = can(regex("^Standard_", var.vm_size))
+    error_message = "VM size must start with 'Standard_'."
+  }
 }
 
 variable "admin_username" {
@@ -91,6 +97,10 @@ variable "admin_password" {
 variable "auto_shutdown_time" {
   default     = "2200"
   description = "Daily auto-shutdown time in UTC (e.g. 2200 = 22:00)"
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3])[0-5][0-9]$", var.auto_shutdown_time))
+    error_message = "Auto-shutdown time must be in HHMM format (0000-2359)."
+  }
 }
 
 variable "github_pat" {
@@ -172,6 +182,13 @@ resource "random_id" "dns" {
 # ----------------------------------------------------------
 
 locals {
+  # Common tags for all Azure resources
+  common_tags = {
+    project     = "openclaw"
+    environment = "dev"
+    managed_by  = "terraform"
+  }
+
   # Use provided IP or fall back to auto-detected IP
   allowed_ip = var.allowed_ip != "" ? var.allowed_ip : chomp(data.http.my_ip.response_body)
 
@@ -192,6 +209,7 @@ locals {
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = var.location
+  tags     = local.common_tags
 }
 
 # ----------------------------------------------------------
@@ -203,6 +221,7 @@ resource "azurerm_virtual_network" "main" {
   address_space       = ["10.0.0.0/24"]
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
+  tags                = local.common_tags
 }
 
 resource "azurerm_subnet" "main" {
@@ -217,6 +236,7 @@ resource "azurerm_network_security_group" "main" {
   name                = "nsg-openclaw"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
+  tags                = local.common_tags
 
   # Allow SSH (port 22) from deployer IP only
   security_rule {
@@ -256,6 +276,19 @@ resource "azurerm_network_security_group" "main" {
     source_address_prefix      = "${local.allowed_ip}/32"
     destination_address_prefix = "*"
   }
+
+  # Explicit deny-all (defense in depth — makes intent clear)
+  security_rule {
+    name                       = "Deny-All-Inbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
 }
 
 # Associate NSG with subnet
@@ -272,6 +305,7 @@ resource "azurerm_public_ip" "main" {
   allocation_method   = "Static"
   sku                 = "Standard"
   domain_name_label   = local.dns_label
+  tags                = local.common_tags
 }
 
 # Network interface — connects the VM to the subnet and public IP
@@ -279,6 +313,7 @@ resource "azurerm_network_interface" "main" {
   name                = "nic-openclaw"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
+  tags                = local.common_tags
 
   ip_configuration {
     name                          = "internal"
@@ -300,6 +335,7 @@ resource "azurerm_key_vault" "main" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
+  tags                       = local.common_tags
 
   # Firewall: deny by default, allow only deployer IP and VM public IP.
   # AzureServices bypass keeps platform integrations working without private endpoint.
@@ -365,6 +401,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   admin_password                  = local.admin_password
   disable_password_authentication = true # SSH key-only; password used for dashboard Basic Auth
 
+  tags                  = local.common_tags
   network_interface_ids = [azurerm_network_interface.main.id]
 
   # SSH public key for key-based authentication
@@ -392,22 +429,11 @@ resource "azurerm_linux_virtual_machine" "main" {
     type = "SystemAssigned"
   }
 
-  # Cloud-init provisioning — installs Docker (for Nginx), Node.js, pnpm,
-  # OpenClaw, and writes config files. OpenClaw runs as a systemd service.
-  # The cloud-init template receives pre-rendered file contents from templates/
-  custom_data = base64encode(templatefile("${path.module}/cloud-init.yml", {
-    admin_username        = var.admin_username
-    keyvault_name         = azurerm_key_vault.main.name
-    fqdn                  = local.fqdn
-    file_docker_compose   = file("${path.module}/templates/docker-compose.yml")
-    file_openclaw_json    = file("${path.module}/templates/openclaw.json")
-    file_nginx_conf       = replace(file("${path.module}/templates/nginx.conf"), "__FQDN__", local.fqdn)
-    file_start_sh         = templatefile("${path.module}/templates/start.sh", { keyvault_name = azurerm_key_vault.main.name, fqdn = local.fqdn })
-    file_stop_sh          = file("${path.module}/templates/stop.sh")
-    file_clone_repo_sh    = templatefile("${path.module}/templates/clone-repo.sh", { keyvault_name = azurerm_key_vault.main.name })
-    file_openclaw_service = templatefile("${path.module}/templates/openclaw.service", { admin_username = var.admin_username })
-    file_daemon_json      = file("${path.module}/templates/daemon.json")
-  }))
+  # Cloud-init — minimal bootstrap only (installs Python3, pip, ACL).
+  # All real configuration (Docker, Node.js, Nginx, OpenClaw, firewall,
+  # security hardening) is handled by Ansible via 'make configure'.
+  # No templatefile() needed — cloud-init.yml is a plain static file.
+  custom_data = base64encode(file("${path.module}/cloud-init.yml"))
 }
 
 # Grant the VM's managed identity "Key Vault Secrets User" role

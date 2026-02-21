@@ -1,0 +1,27 @@
+---
+- name: Restart docker
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart openclaw
+  ansible.builtin.systemd:
+    name: openclaw
+    state: restarted
+
+- name: Restart nginx
+  ansible.builtin.command:
+    cmd: docker compose restart
+    chdir: "{{ openclaw_dir }}"
+  become: true
+  become_user: "{{ openclaw_user }}"
+  changed_when: true
